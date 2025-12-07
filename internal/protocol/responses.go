@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strconv"
 )
@@ -30,67 +31,76 @@ type Response struct {
 type ErrorCode string
 
 const (
-	ErrNotFound      ErrorCode = "not_found"
-	ErrAlreadyExists ErrorCode = "already_exists"
-	ErrInvalidState  ErrorCode = "invalid_state"
-	ErrShuttingDown  ErrorCode = "shutting_down"
-	ErrPortInUse     ErrorCode = "port_in_use"
-	ErrInvalidArgs   ErrorCode = "invalid_args"
-	ErrTimeout       ErrorCode = "timeout"
-	ErrInternal      ErrorCode = "internal"
+	ErrNotFound       ErrorCode = "not_found"
+	ErrAlreadyExists  ErrorCode = "already_exists"
+	ErrInvalidState   ErrorCode = "invalid_state"
+	ErrShuttingDown   ErrorCode = "shutting_down"
+	ErrPortInUse      ErrorCode = "port_in_use"
+	ErrInvalidArgs    ErrorCode = "invalid_args"
+	ErrInvalidAction  ErrorCode = "invalid_action"  // Unknown action/sub-verb
+	ErrInvalidCommand ErrorCode = "invalid_command" // Unknown command/verb
+	ErrMissingParam   ErrorCode = "missing_param"   // Required parameter missing
+	ErrTimeout        ErrorCode = "timeout"
+	ErrInternal       ErrorCode = "internal"
 )
 
+// StructuredError contains programmatic error details for MCP translation.
+type StructuredError struct {
+	Code         ErrorCode `json:"code"`
+	Message      string    `json:"message"`
+	Command      string    `json:"command,omitempty"`       // The command that was called
+	Action       string    `json:"action,omitempty"`        // The action that was attempted
+	ValidActions []string  `json:"valid_actions,omitempty"` // List of valid actions
+	Param        string    `json:"param,omitempty"`         // The parameter that was invalid/missing
+	ValidParams  []string  `json:"valid_params,omitempty"`  // List of valid parameter values
+}
+
 // FormatOK formats a simple OK response.
+// Format: OK [message];;
 func FormatOK(message string) []byte {
 	if message == "" {
-		return []byte("OK\r\n")
+		return []byte("OK" + CommandTerminator)
 	}
-	return []byte(fmt.Sprintf("OK %s\r\n", message))
+	return []byte(fmt.Sprintf("OK %s%s", message, CommandTerminator))
 }
 
 // FormatErr formats an error response.
+// Format: ERR code message;;
 func FormatErr(code ErrorCode, message string) []byte {
-	return []byte(fmt.Sprintf("ERR %s %s\r\n", code, message))
+	return []byte(fmt.Sprintf("ERR %s %s%s", code, message, CommandTerminator))
 }
 
 // FormatPong formats a PONG response.
+// Format: PONG;;
 func FormatPong() []byte {
-	return []byte("PONG\r\n")
+	return []byte("PONG" + CommandTerminator)
 }
 
-// FormatJSON formats a JSON response with length prefix.
+// FormatJSON formats a JSON response with base64 encoded data.
+// Format: JSON -- LENGTH\nBASE64DATA;;
 func FormatJSON(data []byte) []byte {
-	header := fmt.Sprintf("JSON %d\r\n", len(data))
-	result := make([]byte, len(header)+len(data)+2)
-	copy(result, header)
-	copy(result[len(header):], data)
-	copy(result[len(header)+len(data):], "\r\n")
-	return result
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return []byte(fmt.Sprintf("JSON %s %d\n%s%s", DataMarker, len(encoded), encoded, CommandTerminator))
 }
 
-// FormatData formats a binary data response with length prefix.
+// FormatData formats a binary data response with base64 encoding.
+// Format: DATA -- LENGTH\nBASE64DATA;;
 func FormatData(data []byte) []byte {
-	header := fmt.Sprintf("DATA %d\r\n", len(data))
-	result := make([]byte, len(header)+len(data)+2)
-	copy(result, header)
-	copy(result[len(header):], data)
-	copy(result[len(header)+len(data):], "\r\n")
-	return result
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return []byte(fmt.Sprintf("DATA %s %d\n%s%s", DataMarker, len(encoded), encoded, CommandTerminator))
 }
 
-// FormatChunk formats a streaming chunk with length prefix.
+// FormatChunk formats a streaming chunk with base64 encoding.
+// Format: CHUNK -- LENGTH\nBASE64DATA;;
 func FormatChunk(data []byte) []byte {
-	header := fmt.Sprintf("CHUNK %d\r\n", len(data))
-	result := make([]byte, len(header)+len(data)+2)
-	copy(result, header)
-	copy(result[len(header):], data)
-	copy(result[len(header)+len(data):], "\r\n")
-	return result
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return []byte(fmt.Sprintf("CHUNK %s %d\n%s%s", DataMarker, len(encoded), encoded, CommandTerminator))
 }
 
 // FormatEnd formats an END response for chunked streams.
+// Format: END;;
 func FormatEnd() []byte {
-	return []byte("END\r\n")
+	return []byte("END" + CommandTerminator)
 }
 
 // ParseLengthPrefixed parses a length-prefixed response line.

@@ -115,7 +115,12 @@ func (c *Connection) handleCommand(ctx context.Context, cmd *protocol.Command) e
 	case protocol.VerbCurrentPage:
 		return c.handleCurrentPage(cmd)
 	default:
-		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unknown command: %s", cmd.Verb))
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidCommand,
+			Message:      "unknown command",
+			Command:      cmd.Verb,
+			ValidActions: protocol.ValidVerbs,
+		})
 	}
 }
 
@@ -171,6 +176,19 @@ func (c *Connection) writeErr(code protocol.ErrorCode, msg string) error {
 		c.conn.SetWriteDeadline(time.Now().Add(c.daemon.config.WriteTimeout))
 	}
 	return c.writer.WriteErr(code, msg)
+}
+
+// writeStructuredErr sends a structured error as JSON for programmatic parsing.
+func (c *Connection) writeStructuredErr(err *protocol.StructuredError) error {
+	data, _ := json.Marshal(err)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.daemon.config.WriteTimeout > 0 {
+		c.conn.SetWriteDeadline(time.Now().Add(c.daemon.config.WriteTimeout))
+	}
+	return c.writer.WriteErr(err.Code, string(data))
 }
 
 func (c *Connection) writePong() error {

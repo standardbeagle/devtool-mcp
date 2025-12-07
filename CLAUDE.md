@@ -182,6 +182,7 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 - Lock-free design using `sync.Map` for proxy registry
 - **Auto-port discovery**: If requested port is in use, automatically finds an available port
 - **Auto-restart on crash**: Automatically restarts if HTTP server fails (max 5 restarts per minute)
+- **Ready signal**: `Ready()` returns a channel that closes when server is ready to accept connections
 - Returns actual listening address in response (important when port auto-assigned)
 
 **Three-part system**:
@@ -507,6 +508,50 @@ The proxy automatically injects `window.__devtool` into all HTML pages, providin
 - `diagnoseLayout()` - Find all layout issues
 - `showLayout(config)` - Visual debugging overlay
 
+**Layout Robustness & Fragility** (7 functions):
+- `checkTextFragility(selector?)` - Detect text truncation, ellipsis, viewport fonts, overflow clipping
+- `checkResponsiveRisk(selector?)` - Find fixed widths, unbounded images, flex/grid issues
+- `capturePerformanceMetrics()` - CLS score, long tasks, resource sizes, paint timing
+- `runAxeAudit(options?)` - Full axe-core accessibility audit (loads ~300KB on demand)
+- `auditLayoutRobustness(options?)` - Comprehensive audit with scoring and recommendations
+- `observeLayoutShifts(callback?)` - Real-time CLS observation
+- `observeLongTasks(callback?)` - Real-time long task observation
+
+**Quality & Performance Auditing** (10 functions):
+- `observeFrameRate(options?)` - Detect jank/stuttering, measure FPS and smoothness
+- `observeLongAnimationFrames(callback?)` - LoAF API with script attribution (Chrome 123+)
+- `observeINP(callback?)` - Interaction to Next Paint - Core Web Vital since March 2024
+- `observeLCP(callback?)` - Largest Contentful Paint - Core Web Vital
+- `auditDOMComplexity()` - DOM node count, depth, children analysis with Lighthouse thresholds
+- `captureMemoryMetrics()` - JS heap size, pressure assessment (Chrome only)
+- `measureMemoryDetailed()` - Detailed memory with attribution (requires COOP/COEP)
+- `auditEventListeners()` - Inline handler count, potential leak detection
+- `estimateTBT()` - Total Blocking Time estimation from long tasks
+- `auditPageQuality()` - Comprehensive audit combining all checks with A-F grading
+
+**CSS Evaluation & Architecture** (7 functions):
+- `detectContentAreas()` - Identify CMS content vs app components vs layout frames
+- `auditCSSArchitecture()` - Specificity distribution, ID selectors, nesting depth, !important usage
+- `auditCSSContainment()` - CSS containment usage, content-visibility, container queries
+- `auditResponsiveStrategy()` - Media queries vs container queries analysis
+- `auditCSSConsistency()` - Colors, fonts, spacing, border-radius consistency
+- `auditTailwind()` - Tailwind-specific analysis: utilities, arbitrary values, breakpoints, deprecations
+- `auditCSS(options?)` - Comprehensive CSS audit with architecture, containment, consistency, Tailwind
+
+**Security & Validation** (12 functions):
+- `auditSecurityHeaders()` - CSP meta tags, HTTPS, mixed content, referrer policy
+- `observeCSPViolations(callback?)` - Real-time Content Security Policy violation monitoring
+- `auditDOMSecurity()` - Inline scripts, event handlers, javascript: URLs, dangerous attributes
+- `detectFramework()` - Detect React, Vue, Angular, Svelte, Next.js, Nuxt, jQuery, Alpine, htmx
+- `auditFrameworkQuality()` - Framework-specific security issues (dev builds, v-html, vulnerable versions)
+- `auditFormSecurity()` - CSRF tokens, autocomplete, sensitive fields, insecure actions
+- `auditExternalResources()` - External scripts, iframes, SRI integrity, sandbox attributes
+- `auditPrototypePollution()` - Prototype pollution checks and recommendations
+- `auditSecurity()` - Comprehensive security audit with A-F grading
+- `loadDOMPurify()` - Load DOMPurify from CDN for sanitization
+- `sanitizeHTML(dirty, options?)` - Sanitize HTML using DOMPurify (async)
+- `checkXSSRisk(input)` - Check string for XSS patterns (script tags, event handlers, etc.)
+
 #### Common Usage Patterns
 
 **Comprehensive Element Inspection**:
@@ -565,6 +610,162 @@ proxy {action: "exec", id: "dev", code: "window.__devtool.walkChildren('.contain
 ```javascript
 proxy {action: "exec", id: "dev", code: "window.__devtool.measureBetween('#header', '#footer')"}
 // Returns: {distance: {x, y, diagonal}, direction: 'below'}
+```
+
+**Text Fragility Check**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.checkTextFragility()"}
+// Returns: {issues: [...], summary: {truncations: 2, overflows: 1, errors: 2, warnings: 3}}
+// Detects: ellipsis truncation (WCAG 1.4.10), overflow clipping, viewport fonts, tight line-height
+```
+
+**Responsive Risk Analysis**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.checkResponsiveRisk()"}
+// Returns: {issues: [...], breakpoints: {'320px': {willOverflow: true}, ...}, summary: {...}}
+// Detects: fixed widths in fluid containers, unbounded images, flex/grid overflow risks
+```
+
+**Performance Metrics (CLS, Long Tasks, Resources)**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.capturePerformanceMetrics()"}
+// Returns: {cls: {score: 0.15, rating: 'needs-improvement'}, longTasks: [...],
+//           resources: {byType: {...}, largest: [...], slowest: [...]}, totals: {...}}
+```
+
+**Full Axe-Core Accessibility Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.runAxeAudit()"}
+// Loads axe-core (~300KB) from CDN on first call
+// Returns: {violations: [...], summary: {critical: 0, serious: 2}, score: 78, testEngine: {...}}
+```
+
+**Comprehensive Layout Robustness Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditLayoutRobustness()"}
+// Returns: {textFragility: {...}, responsiveRisk: {...}, performance: {...},
+//           scores: {text: 85, responsive: 70, overall: 78}, grade: 'C', recommendations: [...]}
+
+// With full axe-core audit:
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditLayoutRobustness({includeAxe: true})"}
+```
+
+**Real-Time CLS Observation**:
+```javascript
+proxy {action: "exec", id: "dev", code: "var obs = window.__devtool.observeLayoutShifts(); setTimeout(() => console.log(obs.stop()), 5000)"}
+// Monitors layout shifts in real-time, returns {finalCLS: 0.12, entries: [...]}
+```
+
+**Frame Rate & Jank Detection**:
+```javascript
+proxy {action: "exec", id: "dev", code: "var obs = window.__devtool.observeFrameRate({duration: 5000}); setTimeout(() => console.log(obs.stop()), 5500)"}
+// Returns: {avgFPS: 58.5, smoothness: 92.3, jankFrames: 3, rating: 'smooth'}
+```
+
+**Core Web Vitals - INP (Interaction to Next Paint)**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.observeINP(e => console.log('INP:', e.inp, e.rating))"}
+// Monitors all interactions, reports worst INP with breakdown (inputDelay, processingTime, presentationDelay)
+// Thresholds: good <200ms, needs-improvement 200-500ms, poor >500ms
+```
+
+**Core Web Vitals - LCP (Largest Contentful Paint)**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.observeLCP(e => console.log('LCP:', e.value, e.element))"}
+// Reports LCP candidates as they're painted
+// Thresholds: good <2500ms, needs-improvement 2500-4000ms, poor >4000ms
+```
+
+**DOM Complexity Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditDOMComplexity()"}
+// Returns: {totalNodes: 2500, maxDepth: 45, maxChildren: 120, rating: 'poor', recommendations: [...]}
+// Lighthouse thresholds: nodes <1500, depth <32, children <60
+```
+
+**Memory Monitoring (Chrome)**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.captureMemoryMetrics()"}
+// Returns: {jsHeap: {usedMB: 50, percentUsed: 2.4}, pressure: 'low'}
+```
+
+**Total Blocking Time**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.estimateTBT()"}
+// Returns: {totalBlockingTime: 350, longTaskCount: 8, rating: 'needs-improvement'}
+// Thresholds: good <200ms, needs-improvement 200-600ms, poor >600ms
+```
+
+**Comprehensive Page Quality Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditPageQuality()"}
+// Returns: {grade: 'B', overallScore: 82, criticalIssues: [...], recommendations: [...],
+//           scores: {dom: 70, tbt: 60, memory: 100, text: 85, responsive: 90, cls: 100}}
+```
+
+**CSS Architecture Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditCSSArchitecture()"}
+// Returns: {stats: {totalSelectors: 450, idSelectorCount: 8, importantCount: 15},
+//           namingConvention: {dominant: 'kebabCase', consistency: 0.67},
+//           issues: [...], healthScore: 72, rating: 'needs-improvement'}
+```
+
+**Tailwind CSS Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditTailwind()"}
+// Returns: {detected: true, usage: {utilityClasses: 189, arbitraryValues: 12},
+//           patterns: {breakpoints: {md: 45, lg: 34}}, issues: [...],
+//           recommendations: [...], healthScore: 85, rating: 'good'}
+```
+
+**Comprehensive CSS Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditCSS()"}
+// Returns: {architecture: {...}, containment: {...}, responsive: {...},
+//           consistency: {...}, tailwind: {...}, summary: {...},
+//           issues: [...], overallScore: 78, grade: 'C'}
+```
+
+**Content Area Detection (CMS vs App)**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.detectContentAreas()"}
+// Returns: {byCategory: {cms: [...], app: [...], layout: [...]},
+//           recommendations: [{area: '.sidebar', type: 'app-containment', ...}]}
+```
+
+**Comprehensive Security Audit**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditSecurity()"}
+// Returns: {headers: {...}, domSecurity: {...}, framework: {...}, forms: {...},
+//           summary: {frameworkDetected: 'React', criticalIssues: 2},
+//           overallScore: 75, grade: 'C'}
+```
+
+**Detect JavaScript Frameworks**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.detectFramework()"}
+// Returns: {frameworks: [{name: 'React', version: '18.2.0'}, {name: 'Next.js'}],
+//           primary: 'React', count: 2}
+```
+
+**Check User Input for XSS**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.checkXSSRisk('<script>alert(1)</script>')"}
+// Returns: {hasRisk: true, highRisk: true, risks: [{type: 'script-tag', severity: 'high'}]}
+```
+
+**Sanitize HTML Content**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.sanitizeHTML('<img onerror=alert(1) src=x>')"}
+// Returns: {clean: '<img src=\"x\">', removed: [...]}
+```
+
+**Form Security Analysis**:
+```javascript
+proxy {action: "exec", id: "dev", code: "window.__devtool.auditFormSecurity()"}
+// Returns: {forms: [...], issues: [{type: 'missing-csrf', ...}],
+//           summary: {total: 3, withCSRF: 2, passwordFields: 1}}
 ```
 
 #### Testing

@@ -44,6 +44,10 @@ type ProxyServer struct {
 	wsConns     sync.Map     // Active WebSocket connections
 	lastError   atomic.Value // stores last error (string) if server crashed
 
+	// Ready signal - closed when server is ready to accept connections
+	ready     chan struct{}
+	readyOnce sync.Once
+
 	// Auto-restart configuration
 	autoRestart   bool
 	maxRestarts   int
@@ -88,6 +92,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		Path:          config.Path,
 		logger:        NewTrafficLogger(config.MaxLogSize),
 		pageTracker:   NewPageTracker(100, 5*time.Minute),
+		ready:         make(chan struct{}),
 		autoRestart:   config.AutoRestart,
 		maxRestarts:   5,               // Max 5 restarts
 		restartWindow: 1 * time.Minute, // Within 1 minute window
@@ -153,6 +158,12 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 
 	ps.startTime = time.Now()
 	ps.running.Store(true)
+
+	// Signal that server is ready to accept connections
+	// This is safe because the listener is already bound
+	ps.readyOnce.Do(func() {
+		close(ps.ready)
+	})
 
 	// Start server in goroutine using existing listener
 	go ps.runServer(ctx, listener)
@@ -285,6 +296,12 @@ func (ps *ProxyServer) Logger() *TrafficLogger {
 // PageTracker returns the page tracker for this proxy server.
 func (ps *ProxyServer) PageTracker() *PageTracker {
 	return ps.pageTracker
+}
+
+// Ready returns a channel that is closed when the server is ready to accept connections.
+// Use this to wait for server readiness instead of polling or sleeping.
+func (ps *ProxyServer) Ready() <-chan struct{} {
+	return ps.ready
 }
 
 // Stats returns proxy statistics.

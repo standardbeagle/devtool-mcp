@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/base64"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -15,22 +17,22 @@ func TestParseCommand_Simple(t *testing.T) {
 	}{
 		{
 			name:  "PING",
-			input: "PING\r\n",
+			input: "PING;;",
 			want:  &Command{Verb: "PING"},
 		},
 		{
 			name:  "INFO",
-			input: "INFO\r\n",
+			input: "INFO;;",
 			want:  &Command{Verb: "INFO"},
 		},
 		{
 			name:  "SHUTDOWN",
-			input: "SHUTDOWN\r\n",
+			input: "SHUTDOWN;;",
 			want:  &Command{Verb: "SHUTDOWN"},
 		},
 		{
 			name:  "DETECT with path",
-			input: "DETECT /home/user/project\r\n",
+			input: "DETECT /home/user/project;;",
 			want:  &Command{Verb: "DETECT", Args: []string{"/home/user/project"}},
 		},
 	}
@@ -64,7 +66,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 	}{
 		{
 			name:  "PROC STATUS",
-			input: "PROC STATUS my-process\r\n",
+			input: "PROC STATUS my-process;;",
 			want: &Command{
 				Verb:    "PROC",
 				SubVerb: "STATUS",
@@ -73,7 +75,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 		},
 		{
 			name:  "PROC LIST",
-			input: "PROC LIST\r\n",
+			input: "PROC LIST;;",
 			want: &Command{
 				Verb:    "PROC",
 				SubVerb: "LIST",
@@ -81,7 +83,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 		},
 		{
 			name:  "PROC STOP with force",
-			input: "PROC STOP my-process force\r\n",
+			input: "PROC STOP my-process force;;",
 			want: &Command{
 				Verb:    "PROC",
 				SubVerb: "STOP",
@@ -90,7 +92,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 		},
 		{
 			name:  "PROXY START",
-			input: "PROXY START dev http://localhost:3000 8080\r\n",
+			input: "PROXY START dev http://localhost:3000 8080;;",
 			want: &Command{
 				Verb:    "PROXY",
 				SubVerb: "START",
@@ -99,7 +101,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 		},
 		{
 			name:  "PROXY LIST",
-			input: "PROXY LIST\r\n",
+			input: "PROXY LIST;;",
 			want: &Command{
 				Verb:    "PROXY",
 				SubVerb: "LIST",
@@ -107,7 +109,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 		},
 		{
 			name:  "PROXYLOG STATS",
-			input: "PROXYLOG STATS dev\r\n",
+			input: "PROXYLOG STATS dev;;",
 			want: &Command{
 				Verb:    "PROXYLOG",
 				SubVerb: "STATS",
@@ -116,7 +118,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 		},
 		{
 			name:  "CURRENTPAGE LIST",
-			input: "CURRENTPAGE LIST dev\r\n",
+			input: "CURRENTPAGE LIST dev;;",
 			want: &Command{
 				Verb:    "CURRENTPAGE",
 				SubVerb: "LIST",
@@ -148,19 +150,53 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 	}
 }
 
+// Helper to format test input with base64 encoded data
+func formatTestCommand(verb string, args []string, data string) string {
+	var buf strings.Builder
+	buf.WriteString(verb)
+	for _, arg := range args {
+		buf.WriteByte(' ')
+		buf.WriteString(arg)
+	}
+	if data != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(data))
+		buf.WriteString(" -- ")
+		buf.WriteString(strconv.Itoa(len(encoded)))
+		buf.WriteByte('\n')
+		buf.WriteString(encoded)
+	}
+	buf.WriteString(";;")
+	return buf.String()
+}
+
 func TestParseCommand_WithData(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		wantVerb string
+		wantArgs []string
 		wantData string
 		wantErr  bool
 	}{
 		{
 			name:     "RUN-JSON",
-			input:    "RUN-JSON 44\r\n{\"id\":\"test\",\"path\":\".\",\"mode\":\"background\"}\r\n",
+			input:    formatTestCommand("RUN-JSON", nil, `{"id":"test","path":".","mode":"background"}`),
 			wantVerb: "RUN-JSON",
 			wantData: `{"id":"test","path":".","mode":"background"}`,
+		},
+		{
+			name:     "PROXY START with path data",
+			input:    formatTestCommand("PROXY START", []string{"dev", "http://localhost:3000", "8080"}, `{"path":"."}`),
+			wantVerb: "PROXY",
+			wantArgs: []string{"dev", "http://localhost:3000", "8080"},
+			wantData: `{"path":"."}`,
+		},
+		{
+			name:     "PROXY EXEC with code",
+			input:    formatTestCommand("PROXY EXEC", []string{"dev"}, "document.title"),
+			wantVerb: "PROXY",
+			wantArgs: []string{"dev"},
+			wantData: "document.title",
 		},
 	}
 
@@ -179,9 +215,29 @@ func TestParseCommand_WithData(t *testing.T) {
 				if string(got.Data) != tt.wantData {
 					t.Errorf("Data = %v, want %v", string(got.Data), tt.wantData)
 				}
+				if len(tt.wantArgs) > 0 {
+					if len(got.Args) != len(tt.wantArgs) {
+						t.Errorf("Args = %v, want %v", got.Args, tt.wantArgs)
+					} else {
+						for i, arg := range tt.wantArgs {
+							if got.Args[i] != arg {
+								t.Errorf("Args[%d] = %v, want %v", i, got.Args[i], arg)
+							}
+						}
+					}
+				}
 			}
 		})
 	}
+}
+
+// Helper to format test response with base64 encoded data
+func formatTestResponse(respType string, data string) string {
+	if data == "" {
+		return respType + ";;"
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(data))
+	return respType + " -- " + strconv.Itoa(len(encoded)) + "\n" + encoded + ";;"
 }
 
 func TestParseResponse(t *testing.T) {
@@ -196,53 +252,53 @@ func TestParseResponse(t *testing.T) {
 	}{
 		{
 			name:     "OK simple",
-			input:    "OK\r\n",
+			input:    "OK;;",
 			wantType: ResponseOK,
 		},
 		{
 			name:     "OK with message",
-			input:    "OK 12345\r\n",
+			input:    "OK 12345;;",
 			wantType: ResponseOK,
 			wantMsg:  "12345",
 		},
 		{
 			name:     "OK with multi-word message",
-			input:    "OK Process started successfully\r\n",
+			input:    "OK Process started successfully;;",
 			wantType: ResponseOK,
 			wantMsg:  "Process started successfully",
 		},
 		{
 			name:     "PONG",
-			input:    "PONG\r\n",
+			input:    "PONG;;",
 			wantType: ResponsePong,
 		},
 		{
 			name:     "ERR",
-			input:    "ERR not_found process-123\r\n",
+			input:    "ERR not_found process-123;;",
 			wantType: ResponseErr,
 			wantCode: "not_found",
 			wantMsg:  "process-123",
 		},
 		{
 			name:     "END",
-			input:    "END\r\n",
+			input:    "END;;",
 			wantType: ResponseEnd,
 		},
 		{
 			name:     "JSON",
-			input:    "JSON 20\r\n{\"status\":\"running\"}\r\n",
+			input:    formatTestResponse("JSON", `{"status":"running"}`),
 			wantType: ResponseJSON,
 			wantData: `{"status":"running"}`,
 		},
 		{
 			name:     "DATA",
-			input:    "DATA 5\r\nhello\r\n",
+			input:    formatTestResponse("DATA", "hello"),
 			wantType: ResponseData,
 			wantData: "hello",
 		},
 		{
 			name:     "CHUNK",
-			input:    "CHUNK 10\r\nsome bytes\r\n",
+			input:    formatTestResponse("CHUNK", "some bytes"),
 			wantType: ResponseChunk,
 			wantData: "some bytes",
 		},
@@ -280,9 +336,9 @@ func TestFormatOK(t *testing.T) {
 		message string
 		want    string
 	}{
-		{"empty", "", "OK\r\n"},
-		{"with message", "12345", "OK 12345\r\n"},
-		{"with text", "started", "OK started\r\n"},
+		{"empty", "", "OK;;"},
+		{"with message", "12345", "OK 12345;;"},
+		{"with text", "started", "OK started;;"},
 	}
 
 	for _, tt := range tests {
@@ -297,7 +353,7 @@ func TestFormatOK(t *testing.T) {
 
 func TestFormatErr(t *testing.T) {
 	got := FormatErr(ErrNotFound, "process-123")
-	want := "ERR not_found process-123\r\n"
+	want := "ERR not_found process-123;;"
 	if string(got) != want {
 		t.Errorf("FormatErr() = %q, want %q", got, want)
 	}
@@ -347,22 +403,17 @@ func TestFormatCommand(t *testing.T) {
 		{
 			name: "simple",
 			cmd:  &Command{Verb: "PING"},
-			want: "PING\r\n",
+			want: "PING;;",
 		},
 		{
 			name: "with subverb",
 			cmd:  &Command{Verb: "PROC", SubVerb: "STATUS", Args: []string{"test"}},
-			want: "PROC STATUS test\r\n",
+			want: "PROC STATUS test;;",
 		},
 		{
 			name: "with multiple args",
 			cmd:  &Command{Verb: "PROXY", SubVerb: "START", Args: []string{"dev", "http://localhost:3000", "8080"}},
-			want: "PROXY START dev http://localhost:3000 8080\r\n",
-		},
-		{
-			name: "with data",
-			cmd:  &Command{Verb: "RUN-JSON", Data: []byte(`{"id":"test"}`)},
-			want: "RUN-JSON 13\r\n{\"id\":\"test\"}\r\n",
+			want: "PROXY START dev http://localhost:3000 8080;;",
 		},
 	}
 
@@ -376,6 +427,26 @@ func TestFormatCommand(t *testing.T) {
 	}
 }
 
+func TestFormatCommand_WithData(t *testing.T) {
+	// Test command with data - the data gets base64 encoded
+	cmd := &Command{Verb: "RUN-JSON", Data: []byte(`{"id":"test"}`)}
+	formatted := FormatCommand(cmd)
+
+	// Parse it back to verify round-trip
+	parser := NewParser(bytes.NewReader(formatted))
+	parsed, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	if parsed.Verb != cmd.Verb {
+		t.Errorf("Verb = %v, want %v", parsed.Verb, cmd.Verb)
+	}
+	if string(parsed.Data) != string(cmd.Data) {
+		t.Errorf("Data = %v, want %v", string(parsed.Data), string(cmd.Data))
+	}
+}
+
 func TestWriter(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
@@ -384,8 +455,8 @@ func TestWriter(t *testing.T) {
 	if err := w.WriteOK("12345"); err != nil {
 		t.Errorf("WriteOK failed: %v", err)
 	}
-	if got := buf.String(); got != "OK 12345\r\n" {
-		t.Errorf("WriteOK = %q, want %q", got, "OK 12345\r\n")
+	if got := buf.String(); got != "OK 12345;;" {
+		t.Errorf("WriteOK = %q, want %q", got, "OK 12345;;")
 	}
 	buf.Reset()
 
@@ -393,8 +464,8 @@ func TestWriter(t *testing.T) {
 	if err := w.WriteErr(ErrNotFound, "proc-1"); err != nil {
 		t.Errorf("WriteErr failed: %v", err)
 	}
-	if got := buf.String(); got != "ERR not_found proc-1\r\n" {
-		t.Errorf("WriteErr = %q, want %q", got, "ERR not_found proc-1\r\n")
+	if got := buf.String(); got != "ERR not_found proc-1;;" {
+		t.Errorf("WriteErr = %q, want %q", got, "ERR not_found proc-1;;")
 	}
 	buf.Reset()
 
@@ -402,8 +473,8 @@ func TestWriter(t *testing.T) {
 	if err := w.WritePong(); err != nil {
 		t.Errorf("WritePong failed: %v", err)
 	}
-	if got := buf.String(); got != "PONG\r\n" {
-		t.Errorf("WritePong = %q, want %q", got, "PONG\r\n")
+	if got := buf.String(); got != "PONG;;" {
+		t.Errorf("WritePong = %q, want %q", got, "PONG;;")
 	}
 	buf.Reset()
 
@@ -411,8 +482,8 @@ func TestWriter(t *testing.T) {
 	if err := w.WriteEnd(); err != nil {
 		t.Errorf("WriteEnd failed: %v", err)
 	}
-	if got := buf.String(); got != "END\r\n" {
-		t.Errorf("WriteEnd = %q, want %q", got, "END\r\n")
+	if got := buf.String(); got != "END;;" {
+		t.Errorf("WriteEnd = %q, want %q", got, "END;;")
 	}
 }
 
@@ -458,8 +529,12 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestParseChunkedResponse(t *testing.T) {
-	// Simulate a chunked streaming response
-	input := "CHUNK 5\r\nhello\r\nCHUNK 6\r\n world\r\nEND\r\n"
+	// Simulate a chunked streaming response with new format
+	chunk1 := FormatChunk([]byte("hello"))
+	chunk2 := FormatChunk([]byte(" world"))
+	end := FormatEnd()
+
+	input := string(chunk1) + string(chunk2) + string(end)
 	parser := NewParser(strings.NewReader(input))
 
 	var collected bytes.Buffer
@@ -483,5 +558,246 @@ func TestParseChunkedResponse(t *testing.T) {
 
 	if collected.String() != "hello world" {
 		t.Errorf("Collected = %q, want %q", collected.String(), "hello world")
+	}
+}
+
+func TestParseCommand_JSONDetection(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{
+			name:    "JSON object instead of command",
+			input:   `{"path":"/home/user/project"};;`,
+			wantErr: ErrJSONInsteadOfCommand,
+		},
+		{
+			name:    "JSON array instead of command",
+			input:   `["ping", "localhost"];;`,
+			wantErr: ErrJSONInsteadOfCommand,
+		},
+		{
+			name:    "JSON with whitespace",
+			input:   `  {"path":"/home/user"};;`,
+			wantErr: ErrJSONInsteadOfCommand,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewParser(strings.NewReader(tt.input))
+			_, err := parser.ParseCommand()
+			if err != tt.wantErr {
+				t.Errorf("ParseCommand() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseCommand_UnknownVerb(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantVerb string
+	}{
+		{
+			name:     "unknown verb",
+			input:    "INVALID some args;;",
+			wantVerb: "INVALID",
+		},
+		{
+			name:     "another unknown verb",
+			input:    "FOOBAR;;",
+			wantVerb: "FOOBAR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewParser(strings.NewReader(tt.input))
+			_, err := parser.ParseCommand()
+			if err == nil {
+				t.Error("ParseCommand() expected error, got nil")
+				return
+			}
+			// Check that it's an ErrUnknownCommand with the correct verb
+			unknownErr, ok := err.(*ErrUnknownCommand)
+			if !ok {
+				t.Errorf("ParseCommand() error type = %T, want *ErrUnknownCommand", err)
+				return
+			}
+			if unknownErr.Verb != tt.wantVerb {
+				t.Errorf("ErrUnknownCommand.Verb = %q, want %q", unknownErr.Verb, tt.wantVerb)
+			}
+			if len(unknownErr.ValidVerbs) == 0 {
+				t.Error("ErrUnknownCommand.ValidVerbs is empty, want non-empty")
+			}
+		})
+	}
+}
+
+func TestIsValidVerb(t *testing.T) {
+	validVerbs := []string{"RUN", "RUN-JSON", "PROC", "PROXY", "PROXYLOG", "CURRENTPAGE", "DETECT", "PING", "INFO", "SHUTDOWN"}
+	for _, v := range validVerbs {
+		if !isValidVerb(v) {
+			t.Errorf("isValidVerb(%q) = false, want true", v)
+		}
+	}
+
+	invalidVerbs := []string{"INVALID", "FOO", "BAR", "run", "ping", ""}
+	for _, v := range invalidVerbs {
+		if isValidVerb(v) {
+			t.Errorf("isValidVerb(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestResync(t *testing.T) {
+	// Test resync after parsing error - should skip to next terminator
+	input := "garbage data;;" + "PING;;"
+	parser := NewParser(strings.NewReader(input))
+
+	// Skip the garbage
+	err := parser.Resync()
+	if err != nil {
+		t.Fatalf("Resync() failed: %v", err)
+	}
+
+	// Now we should be able to parse PING
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatalf("ParseCommand() after Resync() failed: %v", err)
+	}
+	if cmd.Verb != "PING" {
+		t.Errorf("Verb = %v, want PING", cmd.Verb)
+	}
+}
+
+func TestMultipleCommands(t *testing.T) {
+	// Test parsing multiple commands in sequence
+	input := "PING;;PROC STATUS test;;PROXY LIST;;"
+	parser := NewParser(strings.NewReader(input))
+
+	// Parse first command
+	cmd1, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatalf("First ParseCommand() failed: %v", err)
+	}
+	if cmd1.Verb != "PING" {
+		t.Errorf("First command Verb = %v, want PING", cmd1.Verb)
+	}
+
+	// Parse second command
+	cmd2, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatalf("Second ParseCommand() failed: %v", err)
+	}
+	if cmd2.Verb != "PROC" || cmd2.SubVerb != "STATUS" {
+		t.Errorf("Second command = %v %v, want PROC STATUS", cmd2.Verb, cmd2.SubVerb)
+	}
+
+	// Parse third command
+	cmd3, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatalf("Third ParseCommand() failed: %v", err)
+	}
+	if cmd3.Verb != "PROXY" || cmd3.SubVerb != "LIST" {
+		t.Errorf("Third command = %v %v, want PROXY LIST", cmd3.Verb, cmd3.SubVerb)
+	}
+}
+
+func TestDataWithSpecialCharacters(t *testing.T) {
+	// Test that base64 encoding handles special characters properly
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "JavaScript with semicolons",
+			data: `console.log("hello"); alert("world");`,
+		},
+		{
+			name: "JSON with nested quotes",
+			data: `{"message": "He said \"hello\"", "count": 42}`,
+		},
+		{
+			name: "JavaScript with newlines",
+			data: "function test() {\n  return 42;\n}",
+		},
+		{
+			name: "Binary-like content",
+			data: string([]byte{0x00, 0x01, 0x02, 0xFF, 0xFE}),
+		},
+		{
+			name: "Command terminator in data",
+			data: "this contains ;; the terminator",
+		},
+		{
+			name: "Data marker in data",
+			data: "this contains -- the marker",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Format a command with this data
+			cmd := &Command{
+				Verb:    "PROXY",
+				SubVerb: "EXEC",
+				Args:    []string{"dev"},
+				Data:    []byte(tt.data),
+			}
+			formatted := FormatCommand(cmd)
+
+			// Parse it back
+			parser := NewParser(bytes.NewReader(formatted))
+			parsed, err := parser.ParseCommand()
+			if err != nil {
+				t.Fatalf("ParseCommand() failed: %v", err)
+			}
+
+			if string(parsed.Data) != tt.data {
+				t.Errorf("Data mismatch:\ngot:  %q\nwant: %q", string(parsed.Data), tt.data)
+			}
+		})
+	}
+}
+
+func TestResponseWithSpecialCharacters(t *testing.T) {
+	// Test that response data also handles special characters properly
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "JSON response",
+			data: []byte(`{"message": "Hello;; World", "items": ["a", "b"]}`),
+		},
+		{
+			name: "Response with newlines",
+			data: []byte("line1\nline2\nline3"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Format JSON response
+			formatted := FormatJSON(tt.data)
+
+			// Parse it back
+			parser := NewParser(bytes.NewReader(formatted))
+			resp, err := parser.ParseResponse()
+			if err != nil {
+				t.Fatalf("ParseResponse() failed: %v", err)
+			}
+
+			if resp.Type != ResponseJSON {
+				t.Errorf("Type = %v, want JSON", resp.Type)
+			}
+			if string(resp.Data) != string(tt.data) {
+				t.Errorf("Data mismatch:\ngot:  %q\nwant: %q", string(resp.Data), string(tt.data))
+			}
+		})
 	}
 }

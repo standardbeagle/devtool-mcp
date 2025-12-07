@@ -74,6 +74,10 @@ Works in all modern browsers without transpilation. No external dependencies.
 | [State Capture](/api/frontend/state-capture) | 4 | Capture DOM, styles, storage |
 | [Accessibility](/api/frontend/accessibility) | 5 | A11y inspection and auditing |
 | [Composite](/api/frontend/composite) | 3 | High-level analysis |
+| [Layout Robustness](/api/frontend/layout-robustness) | 7 | Text fragility, responsive risks, performance |
+| [Quality Auditing](/api/frontend/quality-auditing) | 10 | Frame rate, jank, Core Web Vitals, memory |
+| [CSS Evaluation](/api/frontend/css-evaluation) | 7 | Architecture, containment, Tailwind, consistency |
+| [Security & Validation](/api/frontend/security-validation) | 12 | CSP, XSS, frameworks, forms, SRI |
 
 ## Quick Reference
 
@@ -132,6 +136,36 @@ window.__devtool.findOffscreen()          // Find hidden elements
 window.__devtool.selectElement()          // Click to select
 window.__devtool.ask('Question?', ['A', 'B'])  // Ask user
 window.__devtool.waitForElement('.loading-done')  // Wait for element
+```
+
+### CSS Analysis
+
+```javascript
+window.__devtool.auditCSS()               // Full CSS audit with grade
+window.__devtool.auditTailwind()          // Tailwind-specific analysis
+window.__devtool.auditCSSArchitecture()   // Specificity and selectors
+window.__devtool.auditCSSConsistency()    // Colors, fonts, spacing
+window.__devtool.detectContentAreas()     // CMS vs app vs layout
+```
+
+### Quality & Performance
+
+```javascript
+window.__devtool.auditPageQuality()       // Comprehensive quality audit
+window.__devtool.checkTextFragility()     // Text truncation issues
+window.__devtool.checkResponsiveRisk()    // Responsive breakage
+window.__devtool.capturePerformanceMetrics()  // CLS, resources, paint
+window.__devtool.observeFrameRate()       // Real-time FPS monitoring
+```
+
+### Security & Validation
+
+```javascript
+window.__devtool.auditSecurity()          // Comprehensive security audit
+window.__devtool.detectFramework()        // Detect React, Vue, Angular, etc.
+window.__devtool.auditFormSecurity()      // CSRF, validation, sensitive fields
+window.__devtool.checkXSSRisk(input)      // Check string for XSS patterns
+window.__devtool.sanitizeHTML(dirty)      // Sanitize with DOMPurify
 ```
 
 ## Async Functions

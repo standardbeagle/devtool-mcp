@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,30 @@ import (
 	"strings"
 )
 
+// Protocol constants for resilient parsing
+const (
+	// CommandTerminator marks the end of a command (including any data payload)
+	CommandTerminator = ";;"
+
+	// DataMarker separates arguments from data length
+	DataMarker = "--"
+)
+
 // Parser handles parsing of protocol commands and responses.
+// Commands use explicit terminators for resilience:
+//   - Commands end with ";;"
+//   - Data is indicated by "--" followed by length
+//
+// Format:
+//
+//	VERB [SUBVERB] [ARGS...] [-- LENGTH\nDATA];;
+//
+// Examples:
+//
+//	PING;;
+//	PROC STATUS my-process;;
+//	PROXY START dev http://localhost:3000 8080;;
+//	PROXY START dev http://localhost:3000 8080 -- 12\n{"path":"."};;
 type Parser struct {
 	reader *bufio.Reader
 }
@@ -22,35 +46,83 @@ func NewParser(r io.Reader) *Parser {
 	}
 }
 
+// ValidVerbs lists all valid command verbs.
+var ValidVerbs = []string{
+	VerbRun, VerbRunJSON, VerbProc, VerbProxy, VerbProxyLog,
+	VerbCurrentPage, VerbDetect, VerbPing, VerbInfo, VerbShutdown,
+}
+
+// isValidVerb checks if a verb is a known command.
+func isValidVerb(verb string) bool {
+	switch verb {
+	case VerbRun, VerbRunJSON, VerbProc, VerbProxy, VerbProxyLog,
+		VerbCurrentPage, VerbDetect, VerbPing, VerbInfo, VerbShutdown:
+		return true
+	}
+	return false
+}
+
+// ErrJSONInsteadOfCommand indicates JSON was sent instead of a protocol command.
+var ErrJSONInsteadOfCommand = errors.New("json_instead_of_command")
+
+// ErrUnknownCommand indicates an unknown command verb was sent.
+type ErrUnknownCommand struct {
+	Verb       string
+	ValidVerbs []string
+}
+
+func (e *ErrUnknownCommand) Error() string {
+	return "unknown_command:" + e.Verb
+}
+
 // ParseCommand reads and parses a command from the reader.
+// It reads until it finds the command terminator ";;".
 func (p *Parser) ParseCommand() (*Command, error) {
-	line, err := p.readLine()
+	// Read until we find the command terminator
+	content, err := p.readUntilTerminator(CommandTerminator)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(line) == 0 {
+	content = strings.TrimSpace(content)
+	if len(content) == 0 {
 		return nil, errors.New("empty command")
 	}
 
-	parts := strings.Fields(line)
+	// Check for JSON (common misconfiguration)
+	if strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") {
+		return nil, ErrJSONInsteadOfCommand
+	}
+
+	// Check for data marker "--"
+	var cmdPart, dataPart string
+	if idx := strings.Index(content, " "+DataMarker+" "); idx != -1 {
+		cmdPart = content[:idx]
+		dataPart = content[idx+len(" "+DataMarker+" "):]
+	} else if strings.HasSuffix(content, " "+DataMarker) {
+		// Data marker present but no data (error)
+		return nil, errors.New("data marker present but no data length")
+	} else {
+		cmdPart = content
+	}
+
+	// Parse command part
+	parts := strings.Fields(cmdPart)
 	if len(parts) == 0 {
 		return nil, errors.New("empty command")
 	}
 
+	verb := strings.ToUpper(parts[0])
+	if !isValidVerb(verb) {
+		return nil, &ErrUnknownCommand{Verb: verb, ValidVerbs: ValidVerbs}
+	}
+
 	cmd := &Command{
-		Verb: strings.ToUpper(parts[0]),
+		Verb: verb,
 	}
 
-	// Handle commands with data payloads
-	if cmd.Verb == VerbRunJSON || strings.HasSuffix(line, "\\") {
-		// RUN-JSON <length>\r\n<data>\r\n
-		return p.parseCommandWithData(cmd, parts)
-	}
-
-	// Parse remaining parts
+	// Parse subverb and args
 	if len(parts) > 1 {
-		// Check if second part is a known sub-verb
 		subVerb := strings.ToUpper(parts[1])
 		if isSubVerb(subVerb) {
 			cmd.SubVerb = subVerb
@@ -60,159 +132,145 @@ func (p *Parser) ParseCommand() (*Command, error) {
 		}
 	}
 
-	// Check for commands that have inline data with length prefix
-	// e.g., PROXY EXEC <id> <length>\r\n<code>\r\n
-	// e.g., PROXYLOG QUERY <proxy_id> <length>\r\n<filter>\r\n
-	if needsDataPayload(cmd) {
-		return p.parseInlineDataPayload(cmd)
+	// Parse data if present (format: "LENGTH\nDATA")
+	if dataPart != "" {
+		data, err := p.parseDataPart(dataPart)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse data: %w", err)
+		}
+		cmd.Data = data
 	}
 
 	return cmd, nil
 }
 
-// parseCommandWithData handles commands that start with a length prefix.
-func (p *Parser) parseCommandWithData(cmd *Command, parts []string) (*Command, error) {
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("%s requires length parameter", cmd.Verb)
+// parseDataPart parses "LENGTH\nBASE64DATA" format
+// Data is base64 encoded to safely handle JavaScript, JSON, and binary content
+func (p *Parser) parseDataPart(dataPart string) ([]byte, error) {
+	// Find the newline separating length from data
+	newlineIdx := strings.Index(dataPart, "\n")
+	if newlineIdx == -1 {
+		return nil, errors.New("data length without data content (missing newline)")
 	}
 
-	length, err := strconv.Atoi(parts[1])
+	lengthStr := strings.TrimSpace(dataPart[:newlineIdx])
+	length, err := strconv.Atoi(lengthStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid length for %s: %w", cmd.Verb, err)
+		return nil, fmt.Errorf("invalid data length %q: %w", lengthStr, err)
 	}
 
-	data, err := p.readExactly(length)
+	base64Data := dataPart[newlineIdx+1:]
+
+	// Validate length matches actual base64 data
+	if len(base64Data) != length {
+		return nil, fmt.Errorf("data length mismatch: expected %d, got %d", length, len(base64Data))
+	}
+
+	// Decode base64 data
+	decoded, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read data for %s: %w", cmd.Verb, err)
+		return nil, fmt.Errorf("invalid base64 data: %w", err)
 	}
 
-	// Read trailing \r\n
-	if _, err := p.readLine(); err != nil {
-		return nil, fmt.Errorf("missing trailing CRLF for %s: %w", cmd.Verb, err)
-	}
-
-	cmd.Data = data
-	return cmd, nil
+	return decoded, nil
 }
 
-// parseInlineDataPayload handles commands where the last argument is a length.
-func (p *Parser) parseInlineDataPayload(cmd *Command) (*Command, error) {
-	if len(cmd.Args) == 0 {
-		return nil, fmt.Errorf("%s %s requires arguments", cmd.Verb, cmd.SubVerb)
+// readUntilTerminator reads from the reader until the terminator is found.
+// Returns the content before the terminator (terminator is consumed but not returned).
+func (p *Parser) readUntilTerminator(terminator string) (string, error) {
+	var buf bytes.Buffer
+	termBytes := []byte(terminator)
+	termLen := len(termBytes)
+
+	for {
+		b, err := p.reader.ReadByte()
+		if err != nil {
+			if err == io.EOF && buf.Len() > 0 {
+				return "", fmt.Errorf("unexpected EOF, missing terminator %q", terminator)
+			}
+			return "", err
+		}
+
+		buf.WriteByte(b)
+
+		// Check if buffer ends with terminator
+		if buf.Len() >= termLen {
+			tail := buf.Bytes()[buf.Len()-termLen:]
+			if bytes.Equal(tail, termBytes) {
+				// Remove terminator from result
+				result := buf.Bytes()[:buf.Len()-termLen]
+				return string(result), nil
+			}
+		}
 	}
+}
 
-	// Last argument should be the length
-	lastArg := cmd.Args[len(cmd.Args)-1]
-	length, err := strconv.Atoi(lastArg)
-	if err != nil {
-		// No inline data payload
-		return cmd, nil
-	}
-
-	// Remove length from args
-	cmd.Args = cmd.Args[:len(cmd.Args)-1]
-
-	// Read the data payload
-	data, err := p.readExactly(length)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read inline data: %w", err)
-	}
-
-	// Read trailing \r\n
-	if _, err := p.readLine(); err != nil {
-		return nil, fmt.Errorf("missing trailing CRLF: %w", err)
-	}
-
-	cmd.Data = data
-	return cmd, nil
+// Resync attempts to resynchronize the parser by scanning for the next terminator.
+// This can be used to recover from parse errors.
+func (p *Parser) Resync() error {
+	_, err := p.readUntilTerminator(CommandTerminator)
+	return err
 }
 
 // ParseResponse reads and parses a response from the reader.
+// Responses also use the ";;" terminator and "--" data marker.
 func (p *Parser) ParseResponse() (*Response, error) {
-	line, err := p.readLine()
+	content, err := p.readUntilTerminator(CommandTerminator)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(line) == 0 {
+	content = strings.TrimSpace(content)
+	if len(content) == 0 {
 		return nil, errors.New("empty response")
 	}
 
-	parts := strings.SplitN(line, " ", 3)
+	// Check for data marker in response
+	var respPart, dataPart string
+	if idx := strings.Index(content, " "+DataMarker+" "); idx != -1 {
+		respPart = content[:idx]
+		dataPart = content[idx+len(" "+DataMarker+" "):]
+	} else {
+		respPart = content
+	}
+
+	parts := strings.SplitN(respPart, " ", 3)
 	respType := ResponseType(strings.ToUpper(parts[0]))
+
+	resp := &Response{Type: respType}
 
 	switch respType {
 	case ResponseOK:
-		resp := &Response{Type: ResponseOK}
 		if len(parts) > 1 {
 			resp.Message = strings.Join(parts[1:], " ")
 		}
-		return resp, nil
 
 	case ResponseErr:
-		resp := &Response{Type: ResponseErr}
 		if len(parts) >= 2 {
 			resp.Code = parts[1]
 		}
 		if len(parts) >= 3 {
 			resp.Message = parts[2]
 		}
-		return resp, nil
 
-	case ResponsePong:
-		return &Response{Type: ResponsePong}, nil
-
-	case ResponseEnd:
-		return &Response{Type: ResponseEnd}, nil
+	case ResponsePong, ResponseEnd:
+		// No additional data
 
 	case ResponseJSON, ResponseData, ResponseChunk:
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("missing length for %s response", respType)
+		if dataPart == "" {
+			return nil, fmt.Errorf("%s response requires data", respType)
 		}
-		length, err := strconv.Atoi(parts[1])
+		data, err := p.parseDataPart(dataPart)
 		if err != nil {
-			return nil, fmt.Errorf("invalid length for %s: %w", respType, err)
+			return nil, fmt.Errorf("failed to parse %s data: %w", respType, err)
 		}
-
-		data, err := p.readExactly(length)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read %s data: %w", respType, err)
-		}
-
-		// Read trailing \r\n
-		if _, err := p.readLine(); err != nil {
-			return nil, fmt.Errorf("missing trailing CRLF for %s: %w", respType, err)
-		}
-
-		return &Response{Type: respType, Data: data}, nil
+		resp.Data = data
 
 	default:
 		return nil, fmt.Errorf("unknown response type: %s", respType)
 	}
-}
 
-// readLine reads a line terminated by \r\n or \n.
-func (p *Parser) readLine() (string, error) {
-	line, err := p.reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-
-	// Trim trailing \r\n or \n
-	line = strings.TrimSuffix(line, "\n")
-	line = strings.TrimSuffix(line, "\r")
-
-	return line, nil
-}
-
-// readExactly reads exactly n bytes from the reader.
-func (p *Parser) readExactly(n int) ([]byte, error) {
-	data := make([]byte, n)
-	_, err := io.ReadFull(p.reader, data)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
+	return resp, nil
 }
 
 // isSubVerb checks if a string is a known sub-verb.
@@ -226,18 +284,9 @@ func isSubVerb(s string) bool {
 	return false
 }
 
-// needsDataPayload checks if a command might have an inline data payload.
-func needsDataPayload(cmd *Command) bool {
-	switch cmd.Verb {
-	case VerbProxy:
-		return cmd.SubVerb == SubVerbExec
-	case VerbProxyLog:
-		return cmd.SubVerb == SubVerbQuery
-	}
-	return false
-}
-
-// FormatCommand formats a command for transmission.
+// FormatCommand formats a command for transmission using the resilient format.
+// Format: VERB [SUBVERB] [ARGS...] [-- LENGTH\nBASE64DATA];;
+// Data is base64 encoded to safely handle JavaScript, JSON, and binary content.
 func FormatCommand(cmd *Command) []byte {
 	var buf bytes.Buffer
 
@@ -252,13 +301,17 @@ func FormatCommand(cmd *Command) []byte {
 	}
 
 	if len(cmd.Data) > 0 {
+		// Base64 encode the data for safe transmission
+		encoded := base64.StdEncoding.EncodeToString(cmd.Data)
 		buf.WriteByte(' ')
-		buf.WriteString(strconv.Itoa(len(cmd.Data)))
-		buf.WriteString("\r\n")
-		buf.Write(cmd.Data)
+		buf.WriteString(DataMarker)
+		buf.WriteByte(' ')
+		buf.WriteString(strconv.Itoa(len(encoded)))
+		buf.WriteByte('\n')
+		buf.WriteString(encoded)
 	}
 
-	buf.WriteString("\r\n")
+	buf.WriteString(CommandTerminator)
 	return buf.Bytes()
 }
 

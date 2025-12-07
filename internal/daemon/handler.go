@@ -177,6 +177,14 @@ func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error
 	return c.writeJSON(data)
 }
 
+// Valid actions for each command (for structured error responses)
+var (
+	validProcActions        = []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT"}
+	validProxyActions       = []string{"START", "STOP", "STATUS", "LIST", "EXEC"}
+	validProxyLogActions    = []string{"QUERY", "CLEAR", "STATS"}
+	validCurrentPageActions = []string{"LIST", "GET", "CLEAR"}
+)
+
 // handleProc handles the PROC command.
 func (c *Connection) handleProc(ctx context.Context, cmd *protocol.Command) error {
 	if cmd.SubVerb == "" && len(cmd.Args) > 0 {
@@ -195,8 +203,22 @@ func (c *Connection) handleProc(ctx context.Context, cmd *protocol.Command) erro
 		return c.handleProcList(cmd)
 	case protocol.SubVerbCleanupPort:
 		return c.handleProcCleanupPort(ctx, cmd)
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "PROC",
+			Param:        "action",
+			ValidActions: validProcActions,
+		})
 	default:
-		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unknown PROC action: %s", cmd.SubVerb))
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "PROC",
+			Action:       cmd.SubVerb,
+			ValidActions: validProcActions,
+		})
 	}
 }
 
@@ -414,8 +436,22 @@ func (c *Connection) handleProxy(ctx context.Context, cmd *protocol.Command) err
 		return c.handleProxyList(cmd)
 	case protocol.SubVerbExec:
 		return c.handleProxyExec(cmd)
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "PROXY",
+			Param:        "action",
+			ValidActions: validProxyActions,
+		})
 	default:
-		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unknown PROXY action: %s", cmd.SubVerb))
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "PROXY",
+			Action:       cmd.SubVerb,
+			ValidActions: validProxyActions,
+		})
 	}
 }
 
@@ -637,8 +673,22 @@ func (c *Connection) handleProxyLog(cmd *protocol.Command) error {
 		return c.handleProxyLogClear(cmd)
 	case protocol.SubVerbStats:
 		return c.handleProxyLogStats(cmd)
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "PROXYLOG",
+			Param:        "action",
+			ValidActions: validProxyLogActions,
+		})
 	default:
-		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unknown PROXYLOG action: %s", cmd.SubVerb))
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "PROXYLOG",
+			Action:       cmd.SubVerb,
+			ValidActions: validProxyLogActions,
+		})
 	}
 }
 
@@ -764,8 +814,22 @@ func (c *Connection) handleCurrentPage(cmd *protocol.Command) error {
 		return c.handleCurrentPageGet(cmd)
 	case protocol.SubVerbClear:
 		return c.handleCurrentPageClear(cmd)
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "CURRENTPAGE",
+			Param:        "action",
+			ValidActions: validCurrentPageActions,
+		})
 	default:
-		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unknown CURRENTPAGE action: %s", cmd.SubVerb))
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "CURRENTPAGE",
+			Action:       cmd.SubVerb,
+			ValidActions: validCurrentPageActions,
+		})
 	}
 }
 

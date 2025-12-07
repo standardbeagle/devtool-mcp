@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"devtool-mcp/internal/daemon"
@@ -184,7 +185,7 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 
 		result, err := dt.client.Detect(path)
 		if err != nil {
-			return errorResult(fmt.Sprintf("detect failed: %v", err)), emptyOutput, nil
+			return formatDaemonError(err, "detect"), emptyOutput, nil
 		}
 
 		// Convert to output type
@@ -236,7 +237,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 
 		result, err := dt.client.Run(config)
 		if err != nil {
-			return errorResult(fmt.Sprintf("run failed: %v", err)), RunOutput{}, nil
+			return formatDaemonError(err, "run"), RunOutput{}, nil
 		}
 
 		// Convert to output type
@@ -286,7 +287,7 @@ func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, P
 
 	result, err := dt.client.ProcStatus(input.ProcessID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("status failed: %v", err)), ProcOutput{}, nil
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
 	return nil, ProcOutput{
@@ -313,7 +314,7 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 
 	output, err := dt.client.ProcOutput(input.ProcessID, filter)
 	if err != nil {
-		return errorResult(fmt.Sprintf("output failed: %v", err)), ProcOutput{}, nil
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
 	return nil, ProcOutput{
@@ -329,7 +330,7 @@ func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, Pro
 
 	result, err := dt.client.ProcStop(input.ProcessID, input.Force)
 	if err != nil {
-		return errorResult(fmt.Sprintf("stop failed: %v", err)), ProcOutput{}, nil
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
 	return nil, ProcOutput{
@@ -354,7 +355,7 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 
 	result, err := dt.client.ProcList(dirFilter)
 	if err != nil {
-		return errorResult(fmt.Sprintf("list failed: %v", err)), ProcOutput{}, nil
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
 	output := ProcOutput{
@@ -388,7 +389,7 @@ func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResu
 
 	result, err := dt.client.ProcCleanupPort(input.Port)
 	if err != nil {
-		return errorResult(fmt.Sprintf("cleanup_port failed: %v", err)), ProcOutput{}, nil
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
 	output := ProcOutput{
@@ -457,7 +458,7 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 
 	result, err := dt.client.ProxyStart(input.ID, input.TargetURL, port, input.MaxLogSize, cwd)
 	if err != nil {
-		return errorResult(fmt.Sprintf("start failed: %v", err)), ProxyOutput{}, nil
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	listenAddr := getString(result, "listen_addr")
@@ -476,7 +477,7 @@ func (dt *DaemonTools) handleProxyStop(input ProxyInput) (*mcp.CallToolResult, P
 
 	err := dt.client.ProxyStop(input.ID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("stop failed: %v", err)), ProxyOutput{}, nil
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	return nil, ProxyOutput{
@@ -492,7 +493,7 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 
 	result, err := dt.client.ProxyStatus(input.ID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("status failed: %v", err)), ProxyOutput{}, nil
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	output := ProxyOutput{
@@ -531,7 +532,7 @@ func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, P
 
 	result, err := dt.client.ProxyList(dirFilter)
 	if err != nil {
-		return errorResult(fmt.Sprintf("list failed: %v", err)), ProxyOutput{}, nil
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	output := ProxyOutput{
@@ -569,7 +570,7 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 
 	result, err := dt.client.ProxyExec(input.ID, input.Code)
 	if err != nil {
-		return errorResult(fmt.Sprintf("exec failed: %v", err)), ProxyOutput{}, nil
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	success := getBool(result, "success")
@@ -636,7 +637,7 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 
 	result, err := dt.client.ProxyLogQuery(input.ProxyID, filter)
 	if err != nil {
-		return errorResult(fmt.Sprintf("query failed: %v", err)), ProxyLogOutput{}, nil
+		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
 	output := ProxyLogOutput{
@@ -668,7 +669,7 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 func (dt *DaemonTools) handleProxyLogClear(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	err := dt.client.ProxyLogClear(input.ProxyID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("clear failed: %v", err)), ProxyLogOutput{}, nil
+		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
 	return nil, ProxyLogOutput{
@@ -680,7 +681,7 @@ func (dt *DaemonTools) handleProxyLogClear(input ProxyLogInput) (*mcp.CallToolRe
 func (dt *DaemonTools) handleProxyLogStats(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	result, err := dt.client.ProxyLogStats(input.ProxyID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("stats failed: %v", err)), ProxyLogOutput{}, nil
+		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
 	return nil, ProxyLogOutput{
@@ -725,7 +726,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	result, err := dt.client.CurrentPageList(input.ProxyID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("list failed: %v", err)), CurrentPageOutput{}, nil
+		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
 
 	output := CurrentPageOutput{
@@ -750,7 +751,7 @@ func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallTo
 
 	result, err := dt.client.CurrentPageGet(input.ProxyID, input.SessionID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("get failed: %v", err)), CurrentPageOutput{}, nil
+		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
 
 	session := convertToPageSessionOutput(result)
@@ -762,7 +763,7 @@ func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallTo
 func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	err := dt.client.CurrentPageClear(input.ProxyID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("clear failed: %v", err)), CurrentPageOutput{}, nil
+		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
 
 	return nil, CurrentPageOutput{
@@ -799,6 +800,66 @@ func getBool(m map[string]interface{}, key string) bool {
 		return v
 	}
 	return false
+}
+
+// formatDaemonError parses structured errors from daemon and creates helpful LLM-friendly messages.
+func formatDaemonError(err error, toolName string) *mcp.CallToolResult {
+	errStr := err.Error()
+
+	// Try to extract and parse structured JSON error from daemon response
+	// Format: "daemon error: [code] {json}"
+	if idx := strings.Index(errStr, "] {"); idx != -1 {
+		jsonStart := idx + 2 // skip "] "
+		jsonStr := errStr[jsonStart:]
+
+		var structErr protocol.StructuredError
+		if json.Unmarshal([]byte(jsonStr), &structErr) == nil {
+			return formatStructuredError(&structErr, toolName)
+		}
+	}
+
+	// Fallback to original error message
+	return errorResult(fmt.Sprintf("%s failed: %v", toolName, err))
+}
+
+// formatStructuredError creates a helpful LLM-friendly message from a structured error.
+func formatStructuredError(err *protocol.StructuredError, toolName string) *mcp.CallToolResult {
+	var msg strings.Builder
+
+	switch err.Code {
+	case protocol.ErrInvalidAction:
+		msg.WriteString(fmt.Sprintf("%s: unknown action %q", toolName, err.Action))
+		if len(err.ValidActions) > 0 {
+			msg.WriteString(fmt.Sprintf("\n\nValid actions: %s", strings.Join(err.ValidActions, ", ")))
+			msg.WriteString("\n\nExamples:\n")
+			for _, action := range err.ValidActions {
+				msg.WriteString(fmt.Sprintf("  %s {action: %q, ...}\n", toolName, strings.ToLower(action)))
+			}
+		}
+
+	case protocol.ErrMissingParam:
+		msg.WriteString(fmt.Sprintf("%s: %s is required", toolName, err.Param))
+		if len(err.ValidActions) > 0 {
+			msg.WriteString(fmt.Sprintf("\n\nValid values for %s: %s", err.Param, strings.Join(err.ValidActions, ", ")))
+		}
+		if len(err.ValidParams) > 0 {
+			msg.WriteString(fmt.Sprintf("\n\nValid values: %s", strings.Join(err.ValidParams, ", ")))
+		}
+
+	case protocol.ErrInvalidCommand:
+		msg.WriteString(fmt.Sprintf("unknown command %q", err.Command))
+		if len(err.ValidActions) > 0 {
+			msg.WriteString(fmt.Sprintf("\n\nValid commands: %s", strings.Join(err.ValidActions, ", ")))
+		}
+
+	case protocol.ErrNotFound:
+		msg.WriteString(fmt.Sprintf("%s: not found - %s", toolName, err.Message))
+
+	default:
+		msg.WriteString(fmt.Sprintf("%s: %s", toolName, err.Message))
+	}
+
+	return errorResult(msg.String())
 }
 
 func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
