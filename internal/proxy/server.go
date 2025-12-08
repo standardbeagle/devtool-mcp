@@ -104,8 +104,40 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		},
 	}
 
-	// Create reverse proxy
+	// Create reverse proxy with custom Director for proper Host handling
 	ps.proxy = httputil.NewSingleHostReverseProxy(targetURL)
+
+	// Customize Director to handle Host header and X-Forwarded-* headers
+	originalDirector := ps.proxy.Director
+	ps.proxy.Director = func(req *http.Request) {
+		// Capture original Host BEFORE director modifies it
+		// This is the proxy's host (e.g., localhost:8080)
+		originalHost := req.Host
+
+		// Call original director (sets URL, Host to target, etc.)
+		originalDirector(req)
+
+		// Ensure Host header matches target (critical for WordPress and other apps)
+		req.Host = targetURL.Host
+
+		// Add/update X-Forwarded headers for applications that need them
+		// These help apps know the original request came through a proxy
+		if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+			} else {
+				req.Header.Set("X-Forwarded-For", clientIP)
+			}
+		}
+
+		// Set X-Forwarded-Host to the proxy's host (original request host)
+		// This tells backend apps the host the client originally connected to
+		req.Header.Set("X-Forwarded-Host", originalHost)
+
+		// Set protocol - proxy is HTTP
+		req.Header.Set("X-Forwarded-Proto", "http")
+	}
+
 	ps.proxy.ErrorHandler = ps.errorHandler
 	ps.proxy.ModifyResponse = ps.modifyResponse
 
@@ -440,8 +472,14 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	ps.pageTracker.TrackHTTPRequest(httpEntry)
 }
 
-// modifyResponse injects JavaScript into HTML responses.
+// modifyResponse rewrites URLs and injects JavaScript into HTML responses.
 func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
+	// Rewrite Location header for redirects
+	ps.rewriteLocationHeader(resp)
+
+	// Rewrite Set-Cookie headers for domain/path
+	ps.rewriteSetCookieHeaders(resp)
+
 	contentType := resp.Header.Get("Content-Type")
 	if !ShouldInject(contentType) {
 		return nil
@@ -480,8 +518,11 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		}
 	}
 
+	// Rewrite absolute URLs in HTML content pointing to target back to proxy
+	modifiedBody := ps.rewriteURLsInBody(bodyBytes)
+
 	// Inject instrumentation
-	modifiedBody := InjectInstrumentation(bodyBytes, port)
+	modifiedBody = InjectInstrumentation(modifiedBody, port)
 
 	// Update response with uncompressed modified content
 	resp.Body = io.NopCloser(bytes.NewReader(modifiedBody))
@@ -492,6 +533,147 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	resp.Header.Del("Content-Encoding")
 
 	return nil
+}
+
+// rewriteLocationHeader rewrites Location headers to point to the proxy instead of the target.
+func (ps *ProxyServer) rewriteLocationHeader(resp *http.Response) {
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return
+	}
+
+	rewritten := ps.rewriteURL(location)
+	if rewritten != location {
+		resp.Header.Set("Location", rewritten)
+	}
+}
+
+// rewriteSetCookieHeaders rewrites Set-Cookie headers to work with the proxy domain.
+func (ps *ProxyServer) rewriteSetCookieHeaders(resp *http.Response) {
+	cookies := resp.Header["Set-Cookie"]
+	if len(cookies) == 0 {
+		return
+	}
+
+	targetHost := ps.TargetURL.Hostname()
+
+	for i, cookie := range cookies {
+		// Remove or rewrite Domain attribute if it matches target
+		// This allows cookies to work on localhost proxy
+		if strings.Contains(strings.ToLower(cookie), "domain=") {
+			// Parse and rebuild cookie without domain restriction
+			// or with proxy domain
+			cookies[i] = ps.rewriteCookieDomain(cookie, targetHost)
+		}
+	}
+
+	resp.Header["Set-Cookie"] = cookies
+}
+
+// rewriteCookieDomain removes or rewrites the Domain attribute in a Set-Cookie header.
+func (ps *ProxyServer) rewriteCookieDomain(cookie string, targetHost string) string {
+	// Split cookie into parts
+	parts := strings.Split(cookie, ";")
+	var newParts []string
+
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		lower := strings.ToLower(trimmed)
+
+		// Skip domain attributes that match target host
+		if strings.HasPrefix(lower, "domain=") {
+			domainValue := strings.TrimPrefix(lower, "domain=")
+			domainValue = strings.TrimPrefix(domainValue, ".") // Remove leading dot
+
+			// If domain matches target, remove it entirely (allows cookie on any domain)
+			if strings.Contains(targetHost, domainValue) || strings.Contains(domainValue, targetHost) {
+				continue
+			}
+		}
+
+		newParts = append(newParts, part)
+	}
+
+	return strings.Join(newParts, ";")
+}
+
+// rewriteURL rewrites a URL from the target server to the proxy server.
+func (ps *ProxyServer) rewriteURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	// Only rewrite absolute URLs that point to the target
+	if parsed.Host == "" {
+		// Relative URL, no rewriting needed
+		return rawURL
+	}
+
+	// Check if this URL points to our target
+	targetHost := ps.TargetURL.Host
+	if parsed.Host != targetHost {
+		// Different host, don't rewrite
+		return rawURL
+	}
+
+	// Rewrite to proxy URL
+	// Extract proxy host from ListenAddr
+	proxyHost := ps.getProxyHost()
+
+	parsed.Scheme = "http" // Proxy is HTTP
+	parsed.Host = proxyHost
+
+	return parsed.String()
+}
+
+// getProxyHost returns the host:port for the proxy server.
+func (ps *ProxyServer) getProxyHost() string {
+	// ListenAddr is in format ":port" or "[::]:port"
+	// We need to return "localhost:port" for redirect purposes
+	port := "8080"
+	if lastColon := strings.LastIndex(ps.ListenAddr, ":"); lastColon != -1 {
+		port = ps.ListenAddr[lastColon+1:]
+	}
+	return "localhost:" + port
+}
+
+// rewriteURLsInBody rewrites absolute URLs in HTML/JS content from target to proxy.
+func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
+	// Guard against nil TargetURL (can happen in tests with partial setup)
+	if ps.TargetURL == nil {
+		return body
+	}
+
+	targetHost := ps.TargetURL.Host
+	if targetHost == "" {
+		return body
+	}
+
+	proxyHost := ps.getProxyHost()
+
+	// Rewrite common URL patterns pointing to target
+	// http://target:port -> http://localhost:proxyport
+	// https://target:port -> http://localhost:proxyport
+
+	// Build replacement patterns
+	targetHTTP := "http://" + targetHost
+	targetHTTPS := "https://" + targetHost
+	proxyURL := "http://" + proxyHost
+
+	// Replace URLs (simple byte replacement for performance)
+	result := bytes.ReplaceAll(body, []byte(targetHTTPS), []byte(proxyURL))
+	result = bytes.ReplaceAll(result, []byte(targetHTTP), []byte(proxyURL))
+
+	// Also handle URLs with escaped slashes (common in JSON)
+	targetHTTPEscaped := strings.ReplaceAll(targetHTTP, "/", "\\/")
+	targetHTTPSEscaped := strings.ReplaceAll(targetHTTPS, "/", "\\/")
+	proxyURLEscaped := strings.ReplaceAll(proxyURL, "/", "\\/")
+
+	result = bytes.ReplaceAll(result, []byte(targetHTTPSEscaped), []byte(proxyURLEscaped))
+	result = bytes.ReplaceAll(result, []byte(targetHTTPEscaped), []byte(proxyURLEscaped))
+
+	return result
 }
 
 // errorHandler handles proxy errors.
