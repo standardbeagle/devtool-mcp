@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// Limits for interaction and mutation history per session
+const (
+	MaxInteractionsPerSession = 200
+	MaxMutationsPerSession    = 100
+)
+
 // PageSession represents a page view and its associated resources.
 type PageSession struct {
 	ID              string             `json:"id"`
@@ -20,6 +26,14 @@ type PageSession struct {
 	Errors          []FrontendError    `json:"errors,omitempty"`
 	Performance     *PerformanceMetric `json:"performance,omitempty"`
 	Active          bool               `json:"active"`
+
+	// User interaction tracking
+	Interactions     []InteractionEvent `json:"interactions,omitempty"`
+	InteractionCount int                `json:"interaction_count"` // Total count (may exceed slice length)
+
+	// DOM mutation tracking
+	Mutations     []MutationEvent `json:"mutations,omitempty"`
+	MutationCount int             `json:"mutation_count"` // Total count (may exceed slice length)
 }
 
 // PageTracker tracks page sessions and groups requests by page.
@@ -97,6 +111,62 @@ func (pt *PageTracker) TrackPerformance(perf PerformanceMetric) {
 	pt.sessions.Store(sessionID, session)
 }
 
+// TrackInteraction associates a user interaction event with a page session.
+func (pt *PageTracker) TrackInteraction(interaction InteractionEvent) {
+	sessionID := pt.findSessionByURL(interaction.URL)
+	if sessionID == "" {
+		return
+	}
+
+	val, ok := pt.sessions.Load(sessionID)
+	if !ok {
+		return
+	}
+
+	session := val.(*PageSession)
+	session.InteractionCount++
+
+	// Maintain bounded history using circular buffer behavior
+	if len(session.Interactions) < MaxInteractionsPerSession {
+		session.Interactions = append(session.Interactions, interaction)
+	} else {
+		// Shift and append to maintain most recent
+		copy(session.Interactions, session.Interactions[1:])
+		session.Interactions[MaxInteractionsPerSession-1] = interaction
+	}
+
+	session.LastActivity = time.Now()
+	pt.sessions.Store(sessionID, session)
+}
+
+// TrackMutation associates a DOM mutation event with a page session.
+func (pt *PageTracker) TrackMutation(mutation MutationEvent) {
+	sessionID := pt.findSessionByURL(mutation.URL)
+	if sessionID == "" {
+		return
+	}
+
+	val, ok := pt.sessions.Load(sessionID)
+	if !ok {
+		return
+	}
+
+	session := val.(*PageSession)
+	session.MutationCount++
+
+	// Maintain bounded history using circular buffer behavior
+	if len(session.Mutations) < MaxMutationsPerSession {
+		session.Mutations = append(session.Mutations, mutation)
+	} else {
+		// Shift and append to maintain most recent
+		copy(session.Mutations, session.Mutations[1:])
+		session.Mutations[MaxMutationsPerSession-1] = mutation
+	}
+
+	session.LastActivity = time.Now()
+	pt.sessions.Store(sessionID, session)
+}
+
 // GetActiveSessions returns all currently active page sessions.
 func (pt *PageTracker) GetActiveSessions() []*PageSession {
 	var sessions []*PageSession
@@ -149,6 +219,8 @@ func (pt *PageTracker) createPageSession(entry HTTPLogEntry) {
 		Resources:       make([]HTTPLogEntry, 0),
 		Errors:          make([]FrontendError, 0),
 		Active:          true,
+		Interactions:    make([]InteractionEvent, 0),
+		Mutations:       make([]MutationEvent, 0),
 	}
 
 	pt.sessions.Store(sessionID, session)

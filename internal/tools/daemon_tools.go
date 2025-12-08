@@ -158,11 +158,16 @@ A page session groups together:
   - All associated resource requests (JS, CSS, images, etc.)
   - Frontend JavaScript errors from that page
   - Performance metrics (page load time, paint timing, etc.)
+  - User interactions (clicks, keyboard, scroll, etc.)
+  - DOM mutations (added, removed, modified elements)
 
 Examples:
   currentpage {proxy_id: "dev"}
   currentpage {proxy_id: "dev", action: "get", session_id: "page-1"}
   currentpage {proxy_id: "dev", action: "clear"}
+
+The list action returns summary counts (interaction_count, mutation_count).
+The get action returns full interaction and mutation history for debugging.
 
 This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
@@ -864,14 +869,16 @@ func formatStructuredError(err *protocol.StructuredError, toolName string) *mcp.
 
 func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 	output := PageSessionOutput{
-		ID:             getString(m, "id"),
-		URL:            getString(m, "url"),
-		PageTitle:      getString(m, "page_title"),
-		Active:         getBool(m, "active"),
-		ResourceCount:  getInt(m, "resource_count"),
-		ErrorCount:     getInt(m, "error_count"),
-		HasPerformance: getBool(m, "has_performance"),
-		LoadTime:       getInt64(m, "load_time_ms"),
+		ID:               getString(m, "id"),
+		URL:              getString(m, "url"),
+		PageTitle:        getString(m, "page_title"),
+		Active:           getBool(m, "active"),
+		ResourceCount:    getInt(m, "resource_count"),
+		ErrorCount:       getInt(m, "error_count"),
+		HasPerformance:   getBool(m, "has_performance"),
+		LoadTime:         getInt64(m, "load_time_ms"),
+		InteractionCount: getInt(m, "interaction_count"),
+		MutationCount:    getInt(m, "mutation_count"),
 	}
 
 	// Parse timestamps
@@ -905,6 +912,32 @@ func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 					errMap[k] = v
 				}
 				output.Errors = append(output.Errors, errMap)
+			}
+		}
+	}
+
+	// Parse interactions (for detailed view)
+	if interactions, ok := m["interactions"].([]interface{}); ok {
+		for _, i := range interactions {
+			if im, ok := i.(map[string]interface{}); ok {
+				interactionMap := make(map[string]interface{})
+				for k, v := range im {
+					interactionMap[k] = v
+				}
+				output.Interactions = append(output.Interactions, interactionMap)
+			}
+		}
+	}
+
+	// Parse mutations (for detailed view)
+	if mutations, ok := m["mutations"].([]interface{}); ok {
+		for _, m := range mutations {
+			if mm, ok := m.(map[string]interface{}); ok {
+				mutationMap := make(map[string]interface{})
+				for k, v := range mm {
+					mutationMap[k] = v
+				}
+				output.Mutations = append(output.Mutations, mutationMap)
 			}
 		}
 	}

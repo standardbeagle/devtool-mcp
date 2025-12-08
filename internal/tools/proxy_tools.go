@@ -56,6 +56,14 @@ type PageSessionOutput struct {
 	LoadTime       int64                    `json:"load_time_ms,omitempty"`
 	Resources      []string                 `json:"resources,omitempty"` // URLs of resources
 	Errors         []map[string]interface{} `json:"errors,omitempty"`
+
+	// Interaction tracking
+	InteractionCount int                      `json:"interaction_count"`
+	Interactions     []map[string]interface{} `json:"interactions,omitempty"` // Detailed view only
+
+	// Mutation tracking
+	MutationCount int                      `json:"mutation_count"`
+	Mutations     []map[string]interface{} `json:"mutations,omitempty"` // Detailed view only
 }
 
 // ProxyOutput defines output for proxy tool.

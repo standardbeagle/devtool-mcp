@@ -992,15 +992,17 @@ func convertLogEntry(entry *proxy.LogEntry) map[string]interface{} {
 
 func convertPageSession(session *proxy.PageSession, includeDetails bool) map[string]interface{} {
 	result := map[string]interface{}{
-		"id":              session.ID,
-		"url":             session.URL,
-		"page_title":      session.PageTitle,
-		"start_time":      session.StartTime,
-		"last_activity":   session.LastActivity,
-		"active":          session.Active,
-		"resource_count":  len(session.Resources),
-		"error_count":     len(session.Errors),
-		"has_performance": session.Performance != nil,
+		"id":                session.ID,
+		"url":               session.URL,
+		"page_title":        session.PageTitle,
+		"start_time":        session.StartTime,
+		"last_activity":     session.LastActivity,
+		"active":            session.Active,
+		"resource_count":    len(session.Resources),
+		"error_count":       len(session.Errors),
+		"has_performance":   session.Performance != nil,
+		"interaction_count": session.InteractionCount,
+		"mutation_count":    session.MutationCount,
 	}
 
 	if session.Performance != nil {
@@ -1025,6 +1027,100 @@ func convertPageSession(session *proxy.PageSession, includeDetails bool) map[str
 			}
 		}
 		result["errors"] = errors
+
+		// Include interaction history
+		interactions := make([]map[string]interface{}, len(session.Interactions))
+		for i, interaction := range session.Interactions {
+			interactionMap := map[string]interface{}{
+				"id":         interaction.ID,
+				"timestamp":  interaction.Timestamp,
+				"event_type": interaction.EventType,
+				"url":        interaction.URL,
+				"target": map[string]interface{}{
+					"selector":   interaction.Target.Selector,
+					"tag":        interaction.Target.Tag,
+					"id":         interaction.Target.ID,
+					"classes":    interaction.Target.Classes,
+					"text":       interaction.Target.Text,
+					"attributes": interaction.Target.Attributes,
+				},
+			}
+			if interaction.Position != nil {
+				interactionMap["position"] = map[string]interface{}{
+					"client_x": interaction.Position.ClientX,
+					"client_y": interaction.Position.ClientY,
+					"page_x":   interaction.Position.PageX,
+					"page_y":   interaction.Position.PageY,
+				}
+			}
+			if interaction.Key != nil {
+				interactionMap["key"] = map[string]interface{}{
+					"key":   interaction.Key.Key,
+					"code":  interaction.Key.Code,
+					"ctrl":  interaction.Key.Ctrl,
+					"alt":   interaction.Key.Alt,
+					"shift": interaction.Key.Shift,
+					"meta":  interaction.Key.Meta,
+				}
+			}
+			if interaction.Value != "" {
+				interactionMap["value"] = interaction.Value
+			}
+			if interaction.Data != nil {
+				interactionMap["data"] = interaction.Data
+			}
+			interactions[i] = interactionMap
+		}
+		result["interactions"] = interactions
+
+		// Include mutation history
+		mutations := make([]map[string]interface{}, len(session.Mutations))
+		for i, mutation := range session.Mutations {
+			mutationMap := map[string]interface{}{
+				"id":            mutation.ID,
+				"timestamp":     mutation.Timestamp,
+				"mutation_type": mutation.MutationType,
+				"url":           mutation.URL,
+				"target": map[string]interface{}{
+					"selector": mutation.Target.Selector,
+					"tag":      mutation.Target.Tag,
+					"id":       mutation.Target.ID,
+				},
+			}
+			if len(mutation.Added) > 0 {
+				added := make([]map[string]interface{}, len(mutation.Added))
+				for j, node := range mutation.Added {
+					added[j] = map[string]interface{}{
+						"selector": node.Selector,
+						"tag":      node.Tag,
+						"id":       node.ID,
+						"html":     node.HTML,
+					}
+				}
+				mutationMap["added"] = added
+			}
+			if len(mutation.Removed) > 0 {
+				removed := make([]map[string]interface{}, len(mutation.Removed))
+				for j, node := range mutation.Removed {
+					removed[j] = map[string]interface{}{
+						"selector": node.Selector,
+						"tag":      node.Tag,
+						"id":       node.ID,
+						"html":     node.HTML,
+					}
+				}
+				mutationMap["removed"] = removed
+			}
+			if mutation.Attribute != nil {
+				mutationMap["attribute"] = map[string]interface{}{
+					"name":      mutation.Attribute.Name,
+					"old_value": mutation.Attribute.OldValue,
+					"new_value": mutation.Attribute.NewValue,
+				}
+			}
+			mutations[i] = mutationMap
+		}
+		result["mutations"] = mutations
 	}
 
 	return result

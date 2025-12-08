@@ -187,24 +187,28 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 - `screenshot(name)`: Capture screenshot and save to temp file
 - `isConnected()`: Check WebSocket connection status
 - `getStatus()`: Get detailed connection status
-- Plus ~50 diagnostic primitives (see `internal/proxy/diagnostics.js`)
+- `interactions.getHistory()`, `interactions.getLastClick()`, `interactions.getLastClickContext()`: User interaction tracking
+- `mutations.getHistory()`, `mutations.highlightRecent()`: DOM mutation tracking with visual highlighting
+- Plus ~50 diagnostic primitives (see `internal/proxy/scripts/`)
 
-**TrafficLogger** (`internal/proxy/logger.go:78-98`):
+**TrafficLogger** (`internal/proxy/logger.go`):
 - Circular buffer storage (default 1000 entries)
-- Seven log entry types: HTTP, Error, Performance, Custom, Screenshot, Execution, Response
+- Nine log entry types: HTTP, Error, Performance, Custom, Screenshot, Execution, Response, Interaction, Mutation
 - Thread-safe with `sync.RWMutex` for read-heavy workloads
 - Atomic counters for statistics
 
-**JavaScript Injection** (`internal/proxy/injector.go:82-141`):
+**JavaScript Injection** (`internal/proxy/injector.go` + `internal/proxy/scripts/`):
 1. Detect HTML responses via Content-Type header
 2. Decompress response if gzip or deflate encoded
 3. Inject `<script>` tag before `</head>` (preferred), with fallbacks
-4. Return uncompressed modified response
+4. Scripts are organized as separate .js modules using `//go:embed`
+5. Return uncompressed modified response
 
 **PageTracker** (`internal/proxy/pagetracker.go`):
 - Groups HTTP requests by page view for easier debugging
-- Associates errors and performance metrics with page sessions
+- Associates errors, performance metrics, interactions, and mutations with page sessions
 - Lock-free design using `sync.Map`
+- Tracks interaction counts (max 200 per session) and mutation counts (max 100 per session)
 
 ### Output Capture with RingBuffer
 
@@ -263,7 +267,7 @@ tools.RegisterProxyTools(server, proxym)   // proxy, proxylog, currentpage
 
 ### Log Entry Types
 
-The proxy logger supports seven log entry types:
+The proxy logger supports nine log entry types:
 
 | Type | Description | Source |
 |------|-------------|--------|
@@ -274,6 +278,8 @@ The proxy logger supports seven log entry types:
 | `screenshot` | Screenshot captures | `window.__devtool.screenshot()` |
 | `execution` | JavaScript execution requests | `proxy exec` action |
 | `response` | JavaScript execution responses | Browser response to exec |
+| `interaction` | User interactions (clicks, keyboard, scroll, etc.) | `window.__devtool_interactions` |
+| `mutation` | DOM mutations (added, removed, modified elements) | `window.__devtool_mutations` |
 
 ### Directory Filtering
 
@@ -303,7 +309,7 @@ The `proc list` and `proxy list` actions support directory filtering:
 
 ### Frontend Diagnostic Primitives
 
-The `window.__devtool` API includes ~50 diagnostic primitives for DOM inspection, layout analysis, visual debugging, and interactive diagnostics. Implementation in `internal/proxy/diagnostics.js`.
+The `window.__devtool` API includes ~50 diagnostic primitives for DOM inspection, layout analysis, visual debugging, and interactive diagnostics. Implementation in `internal/proxy/scripts/` (organized as separate ES5 modules with `//go:embed`).
 
 **Design Principles**:
 1. **Primitives over monoliths**: Small, focused functions (~20-30 lines each)
@@ -321,6 +327,8 @@ The `window.__devtool` API includes ~50 diagnostic primitives for DOM inspection
 - State Capture (4): captureDOM, captureStyles, captureState, captureNetwork
 - Accessibility (5): getA11yInfo, getContrast, getTabOrder, getScreenReaderText, auditAccessibility
 - Quality Auditing (10+): auditDOMComplexity, auditPageQuality, auditCSS, auditSecurity, etc.
+- Interaction Tracking: getHistory, getLastClick, getClicksOn, getMouseTrail, getLastClickContext
+- Mutation Tracking: getHistory, getAdded, getRemoved, getModified, highlightRecent, pause/resume
 
 **Testing**: Use `test-diagnostics.html` as an interactive playground.
 

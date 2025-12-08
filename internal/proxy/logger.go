@@ -24,6 +24,10 @@ const (
 	LogTypeExecution LogEntryType = "execution"
 	// LogTypeResponse represents JavaScript execution responses returned to MCP client.
 	LogTypeResponse LogEntryType = "response"
+	// LogTypeInteraction represents a user interaction event (click, keyboard, etc.).
+	LogTypeInteraction LogEntryType = "interaction"
+	// LogTypeMutation represents a DOM mutation event.
+	LogTypeMutation LogEntryType = "mutation"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -121,6 +125,81 @@ type ExecutionResponse struct {
 	Duration  time.Duration `json:"duration"`
 }
 
+// InteractionEvent represents a user interaction (click, keyboard, etc.).
+type InteractionEvent struct {
+	ID        string                 `json:"id"`
+	Timestamp time.Time              `json:"timestamp"`
+	EventType string                 `json:"event_type"` // click, dblclick, keydown, input, scroll, focus, blur, submit, contextmenu, mousemove
+	Target    InteractionTarget      `json:"target"`
+	Position  *InteractionPosition   `json:"position,omitempty"` // For mouse events
+	Key       *KeyboardInfo          `json:"key,omitempty"`      // For keyboard events
+	Value     string                 `json:"value,omitempty"`    // For input events (sanitized, no passwords)
+	URL       string                 `json:"url"`
+	Data      map[string]interface{} `json:"data,omitempty"` // Extra data (scroll_position, etc.)
+}
+
+// InteractionTarget describes the DOM element that was interacted with.
+type InteractionTarget struct {
+	Selector   string            `json:"selector"`
+	Tag        string            `json:"tag"`
+	ID         string            `json:"id,omitempty"`
+	Classes    []string          `json:"classes,omitempty"`
+	Text       string            `json:"text,omitempty"`       // Truncated innerText
+	Attributes map[string]string `json:"attributes,omitempty"` // Relevant attrs only (href, src, type, etc.)
+}
+
+// InteractionPosition describes the mouse position during an interaction.
+type InteractionPosition struct {
+	ClientX int `json:"client_x"`
+	ClientY int `json:"client_y"`
+	PageX   int `json:"page_x"`
+	PageY   int `json:"page_y"`
+}
+
+// KeyboardInfo describes keyboard event details.
+type KeyboardInfo struct {
+	Key   string `json:"key"`
+	Code  string `json:"code"`
+	Ctrl  bool   `json:"ctrl,omitempty"`
+	Alt   bool   `json:"alt,omitempty"`
+	Shift bool   `json:"shift,omitempty"`
+	Meta  bool   `json:"meta,omitempty"`
+}
+
+// MutationEvent represents a DOM mutation.
+type MutationEvent struct {
+	ID           string           `json:"id"`
+	Timestamp    time.Time        `json:"timestamp"`
+	MutationType string           `json:"mutation_type"` // added, removed, attributes, characterData
+	Target       MutationTarget   `json:"target"`
+	Added        []MutationNode   `json:"added,omitempty"`
+	Removed      []MutationNode   `json:"removed,omitempty"`
+	Attribute    *AttributeChange `json:"attribute,omitempty"`
+	URL          string           `json:"url"`
+}
+
+// MutationTarget describes the parent element where a mutation occurred.
+type MutationTarget struct {
+	Selector string `json:"selector"`
+	Tag      string `json:"tag"`
+	ID       string `json:"id,omitempty"`
+}
+
+// MutationNode describes a node that was added or removed.
+type MutationNode struct {
+	Selector string `json:"selector,omitempty"`
+	Tag      string `json:"tag"`
+	ID       string `json:"id,omitempty"`
+	HTML     string `json:"html,omitempty"` // Truncated outerHTML
+}
+
+// AttributeChange describes a changed attribute.
+type AttributeChange struct {
+	Name     string `json:"name"`
+	OldValue string `json:"old_value,omitempty"`
+	NewValue string `json:"new_value,omitempty"`
+}
+
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
 	Type        LogEntryType       `json:"type"`
@@ -131,6 +210,8 @@ type LogEntry struct {
 	Screenshot  *Screenshot        `json:"screenshot,omitempty"`
 	Execution   *ExecutionResult   `json:"execution,omitempty"`
 	Response    *ExecutionResponse `json:"response,omitempty"`
+	Interaction *InteractionEvent  `json:"interaction,omitempty"`
+	Mutation    *MutationEvent     `json:"mutation,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
@@ -209,6 +290,22 @@ func (tl *TrafficLogger) LogResponse(entry ExecutionResponse) {
 	})
 }
 
+// LogInteraction adds a user interaction event.
+func (tl *TrafficLogger) LogInteraction(entry InteractionEvent) {
+	tl.log(LogEntry{
+		Type:        LogTypeInteraction,
+		Interaction: &entry,
+	})
+}
+
+// LogMutation adds a DOM mutation event.
+func (tl *TrafficLogger) LogMutation(entry MutationEvent) {
+	tl.log(LogEntry{
+		Type:     LogTypeMutation,
+		Mutation: &entry,
+	})
+}
+
 // log adds an entry to the circular buffer.
 func (tl *TrafficLogger) log(entry LogEntry) {
 	pos := tl.head.Add(1) - 1
@@ -275,13 +372,15 @@ type LoggerStats struct {
 
 // LogFilter specifies criteria for querying logs.
 type LogFilter struct {
-	Types       []LogEntryType `json:"types,omitempty"`       // Filter by entry type
-	Methods     []string       `json:"methods,omitempty"`     // HTTP methods
-	URLPattern  string         `json:"url_pattern,omitempty"` // URL substring match
-	StatusCodes []int          `json:"status_codes,omitempty"`
-	Since       *time.Time     `json:"since,omitempty"`
-	Until       *time.Time     `json:"until,omitempty"`
-	Limit       int            `json:"limit,omitempty"` // Max results (0 = all)
+	Types            []LogEntryType `json:"types,omitempty"`             // Filter by entry type
+	Methods          []string       `json:"methods,omitempty"`           // HTTP methods
+	URLPattern       string         `json:"url_pattern,omitempty"`       // URL substring match
+	StatusCodes      []int          `json:"status_codes,omitempty"`
+	Since            *time.Time     `json:"since,omitempty"`
+	Until            *time.Time     `json:"until,omitempty"`
+	Limit            int            `json:"limit,omitempty"`             // Max results (0 = all)
+	InteractionTypes []string       `json:"interaction_types,omitempty"` // click, keydown, scroll, etc.
+	MutationTypes    []string       `json:"mutation_types,omitempty"`    // added, removed, attributes
 }
 
 // Matches returns true if the entry matches the filter.
@@ -327,6 +426,18 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 		if entry.Execution != nil {
 			timestamp = entry.Execution.Timestamp
 		}
+	case LogTypeResponse:
+		if entry.Response != nil {
+			timestamp = entry.Response.Timestamp
+		}
+	case LogTypeInteraction:
+		if entry.Interaction != nil {
+			timestamp = entry.Interaction.Timestamp
+		}
+	case LogTypeMutation:
+		if entry.Mutation != nil {
+			timestamp = entry.Mutation.Timestamp
+		}
 	}
 
 	if f.Since != nil && timestamp.Before(*f.Since) {
@@ -371,6 +482,34 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 			if !match {
 				return false
 			}
+		}
+	}
+
+	// Interaction type filter
+	if entry.Type == LogTypeInteraction && entry.Interaction != nil && len(f.InteractionTypes) > 0 {
+		match := false
+		for _, t := range f.InteractionTypes {
+			if entry.Interaction.EventType == t {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false
+		}
+	}
+
+	// Mutation type filter
+	if entry.Type == LogTypeMutation && entry.Mutation != nil && len(f.MutationTypes) > 0 {
+		match := false
+		for _, t := range f.MutationTypes {
+			if entry.Mutation.MutationType == t {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false
 		}
 	}
 

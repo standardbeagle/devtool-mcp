@@ -1,0 +1,285 @@
+// DevTool API assembly
+// Combines all modules into the window.__devtool global API
+
+(function() {
+  'use strict';
+
+  var core = window.__devtool_core;
+  var utils = window.__devtool_utils;
+  var overlay = window.__devtool_overlay;
+  var inspection = window.__devtool_inspection;
+  var tree = window.__devtool_tree;
+  var visual = window.__devtool_visual;
+  var layout = window.__devtool_layout;
+  var interactive = window.__devtool_interactive;
+  var capture = window.__devtool_capture;
+  var accessibility = window.__devtool_accessibility;
+  var audit = window.__devtool_audit;
+  var interactions = window.__devtool_interactions;
+  var mutations = window.__devtool_mutations;
+
+  // Main DevTool API
+  window.__devtool = {
+    // ========================================================================
+    // LOGGING API
+    // ========================================================================
+
+    log: function(message, level, data) {
+      level = level || 'info';
+      core.send('custom_log', {
+        level: level,
+        message: String(message),
+        data: data || {},
+        timestamp: Date.now()
+      });
+    },
+
+    debug: function(message, data) {
+      this.log(message, 'debug', data);
+    },
+
+    info: function(message, data) {
+      this.log(message, 'info', data);
+    },
+
+    warn: function(message, data) {
+      this.log(message, 'warn', data);
+    },
+
+    error: function(message, data) {
+      this.log(message, 'error', data);
+    },
+
+    // ========================================================================
+    // ELEMENT INSPECTION
+    // ========================================================================
+
+    getElementInfo: inspection.getElementInfo,
+    getPosition: inspection.getPosition,
+    getComputed: inspection.getComputed,
+    getBox: inspection.getBox,
+    getLayout: inspection.getLayout,
+    getContainer: inspection.getContainer,
+    getStacking: inspection.getStacking,
+    getTransform: inspection.getTransform,
+    getOverflow: inspection.getOverflow,
+
+    // ========================================================================
+    // TREE WALKING
+    // ========================================================================
+
+    walkChildren: tree.walkChildren,
+    walkParents: tree.walkParents,
+    findAncestor: tree.findAncestor,
+
+    // ========================================================================
+    // VISUAL STATE
+    // ========================================================================
+
+    isVisible: visual.isVisible,
+    isInViewport: visual.isInViewport,
+    checkOverlap: visual.checkOverlap,
+
+    // ========================================================================
+    // LAYOUT DIAGNOSTICS
+    // ========================================================================
+
+    findOverflows: layout.findOverflows,
+    findStackingContexts: layout.findStackingContexts,
+    findOffscreen: layout.findOffscreen,
+
+    // ========================================================================
+    // VISUAL OVERLAYS
+    // ========================================================================
+
+    highlight: overlay.highlight,
+    removeHighlight: overlay.removeHighlight,
+    clearAllOverlays: overlay.clearAllOverlays,
+
+    // ========================================================================
+    // INTERACTIVE
+    // ========================================================================
+
+    selectElement: interactive.selectElement,
+    waitForElement: interactive.waitForElement,
+    ask: interactive.ask,
+    measureBetween: interactive.measureBetween,
+
+    // ========================================================================
+    // STATE CAPTURE
+    // ========================================================================
+
+    captureDOM: capture.captureDOM,
+    captureStyles: capture.captureStyles,
+    captureState: capture.captureState,
+    captureNetwork: capture.captureNetwork,
+
+    // ========================================================================
+    // ACCESSIBILITY
+    // ========================================================================
+
+    getA11yInfo: accessibility.getA11yInfo,
+    getContrast: accessibility.getContrast,
+    getTabOrder: accessibility.getTabOrder,
+    getScreenReaderText: accessibility.getScreenReaderText,
+    auditAccessibility: accessibility.auditAccessibility,
+
+    // ========================================================================
+    // QUALITY AUDITS
+    // ========================================================================
+
+    auditDOMComplexity: audit.auditDOMComplexity,
+    auditCSS: audit.auditCSS,
+    auditSecurity: audit.auditSecurity,
+    auditPageQuality: audit.auditPageQuality,
+
+    // ========================================================================
+    // INTERACTION TRACKING (NEW)
+    // ========================================================================
+
+    interactions: interactions,
+
+    // ========================================================================
+    // MUTATION TRACKING (NEW)
+    // ========================================================================
+
+    mutations: mutations,
+
+    // ========================================================================
+    // COMPOSITE CONVENIENCE FUNCTIONS
+    // ========================================================================
+
+    inspect: function(selector) {
+      var el = utils.resolveElement(selector);
+      if (!el) return { error: 'Element not found' };
+
+      return {
+        info: inspection.getElementInfo(selector),
+        position: inspection.getPosition(selector),
+        box: inspection.getBox(selector),
+        layout: inspection.getLayout(selector),
+        stacking: inspection.getStacking(selector),
+        container: inspection.getContainer(selector),
+        visibility: visual.isVisible(selector),
+        viewport: visual.isInViewport(selector)
+      };
+    },
+
+    diagnoseLayout: function(selector) {
+      var overflows = layout.findOverflows();
+      var contexts = layout.findStackingContexts();
+      var offscreen = layout.findOffscreen();
+
+      var result = {
+        overflows: overflows,
+        stackingContexts: contexts,
+        offscreen: offscreen
+      };
+
+      if (selector) {
+        var el = utils.resolveElement(selector);
+        result.element = {
+          selector: utils.generateSelector(el),
+          stacking: inspection.getStacking(selector)
+        };
+      }
+
+      return result;
+    },
+
+    // ========================================================================
+    // CONNECTION STATUS
+    // ========================================================================
+
+    isConnected: function() {
+      return core.isConnected();
+    },
+
+    getStatus: function() {
+      var ws = core.ws();
+      if (!ws) return 'not_initialized';
+      switch (ws.readyState) {
+        case WebSocket.CONNECTING: return 'connecting';
+        case WebSocket.OPEN: return 'connected';
+        case WebSocket.CLOSING: return 'closing';
+        case WebSocket.CLOSED: return 'closed';
+        default: return 'unknown';
+      }
+    },
+
+    // ========================================================================
+    // SCREENSHOT
+    // ========================================================================
+
+    screenshot: function(name, selector) {
+      return new Promise(function(resolve, reject) {
+        if (typeof html2canvas === 'undefined') {
+          reject(new Error('html2canvas not loaded'));
+          return;
+        }
+
+        // Handle different parameter combinations
+        if (typeof name === 'string' && !selector && (name.startsWith('.') || name.startsWith('#') || name.startsWith('['))) {
+          selector = name;
+          name = null;
+        }
+
+        name = name || 'screenshot_' + Date.now();
+
+        var targetElement = document.body;
+        if (selector) {
+          try {
+            targetElement = document.querySelector(selector);
+            if (!targetElement) {
+              reject(new Error('Element not found: ' + selector));
+              return;
+            }
+          } catch (err) {
+            reject(new Error('Invalid selector: ' + selector + ' - ' + err.message));
+            return;
+          }
+        }
+
+        html2canvas(targetElement, {
+          allowTaint: true,
+          useCORS: true,
+          logging: false,
+          scrollY: -window.scrollY,
+          scrollX: -window.scrollX,
+          windowWidth: targetElement === document.body ? document.documentElement.scrollWidth : undefined,
+          windowHeight: targetElement === document.body ? document.documentElement.scrollHeight : undefined
+        }).then(function(canvas) {
+          var dataUrl = canvas.toDataURL('image/png');
+          var width = canvas.width;
+          var height = canvas.height;
+
+          core.send('screenshot', {
+            name: name,
+            data: dataUrl,
+            width: width,
+            height: height,
+            format: 'png',
+            selector: selector || 'body',
+            timestamp: Date.now()
+          });
+
+          resolve({
+            name: name,
+            width: width,
+            height: height,
+            selector: selector || 'body'
+          });
+        }).catch(function(err) {
+          reject(err);
+        });
+      });
+    }
+  };
+
+  console.log('[DevTool] API available at window.__devtool');
+  console.log('[DevTool] Usage:');
+  console.log('  __devtool.log("message", "info", {key: "value"})');
+  console.log('  __devtool.screenshot("my-screenshot")');
+  console.log('  __devtool.interactions.getLastClickContext()');
+  console.log('  __devtool.mutations.highlightRecent(5000)');
+})();

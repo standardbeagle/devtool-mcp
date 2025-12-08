@@ -851,6 +851,28 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					close(resultChan)
 				}
 			}
+
+		case "interactions":
+			// Handle batched interaction events from frontend
+			events := getArrayField(msg.Data, "events")
+			for _, eventData := range events {
+				if em, ok := eventData.(map[string]interface{}); ok {
+					interaction := parseInteractionEvent(em, id, timestamp, msg.URL)
+					ps.logger.LogInteraction(interaction)
+					ps.pageTracker.TrackInteraction(interaction)
+				}
+			}
+
+		case "mutations":
+			// Handle batched mutation events from frontend
+			events := getArrayField(msg.Data, "events")
+			for _, eventData := range events {
+				if em, ok := eventData.(map[string]interface{}); ok {
+					mutation := parseMutationEvent(em, id, timestamp, msg.URL)
+					ps.logger.LogMutation(mutation)
+					ps.pageTracker.TrackMutation(mutation)
+				}
+			}
 		}
 	}
 }
@@ -1007,4 +1029,153 @@ func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *Execution
 	}
 
 	return execID, resultChan, nil
+}
+
+// getArrayField extracts an array from a map field.
+func getArrayField(data map[string]interface{}, key string) []interface{} {
+	if v, ok := data[key]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			return arr
+		}
+	}
+	return nil
+}
+
+// parseInteractionEvent parses an interaction event from JSON data.
+func parseInteractionEvent(data map[string]interface{}, id string, timestamp time.Time, url string) InteractionEvent {
+	event := InteractionEvent{
+		ID:        id,
+		Timestamp: timestamp,
+		EventType: getStringField(data, "event_type"),
+		URL:       url,
+	}
+
+	// Parse target info
+	if targetData, ok := data["target"].(map[string]interface{}); ok {
+		event.Target = InteractionTarget{
+			Selector: getStringField(targetData, "selector"),
+			Tag:      getStringField(targetData, "tag"),
+			ID:       getStringField(targetData, "id"),
+			Text:     getStringField(targetData, "text"),
+		}
+
+		// Parse classes
+		if classes, ok := targetData["classes"].([]interface{}); ok {
+			for _, c := range classes {
+				if s, ok := c.(string); ok {
+					event.Target.Classes = append(event.Target.Classes, s)
+				}
+			}
+		}
+
+		// Parse attributes
+		if attrs, ok := targetData["attributes"].(map[string]interface{}); ok {
+			event.Target.Attributes = make(map[string]string)
+			for k, v := range attrs {
+				if s, ok := v.(string); ok {
+					event.Target.Attributes[k] = s
+				}
+			}
+		}
+	}
+
+	// Parse position
+	if posData, ok := data["position"].(map[string]interface{}); ok {
+		event.Position = &InteractionPosition{
+			ClientX: getIntField(posData, "client_x"),
+			ClientY: getIntField(posData, "client_y"),
+			PageX:   getIntField(posData, "page_x"),
+			PageY:   getIntField(posData, "page_y"),
+		}
+	}
+
+	// Parse keyboard info
+	if keyData, ok := data["key"].(map[string]interface{}); ok {
+		event.Key = &KeyboardInfo{
+			Key:   getStringField(keyData, "key"),
+			Code:  getStringField(keyData, "code"),
+			Ctrl:  getBoolField(keyData, "ctrl"),
+			Alt:   getBoolField(keyData, "alt"),
+			Shift: getBoolField(keyData, "shift"),
+			Meta:  getBoolField(keyData, "meta"),
+		}
+	}
+
+	// Parse value (for input events)
+	event.Value = getStringField(data, "value")
+
+	// Parse extra data
+	if extraData, ok := data["data"].(map[string]interface{}); ok {
+		event.Data = extraData
+	}
+
+	return event
+}
+
+// parseMutationEvent parses a mutation event from JSON data.
+func parseMutationEvent(data map[string]interface{}, id string, timestamp time.Time, url string) MutationEvent {
+	event := MutationEvent{
+		ID:           id,
+		Timestamp:    timestamp,
+		MutationType: getStringField(data, "mutation_type"),
+		URL:          url,
+	}
+
+	// Parse target info
+	if targetData, ok := data["target"].(map[string]interface{}); ok {
+		event.Target = MutationTarget{
+			Selector: getStringField(targetData, "selector"),
+			Tag:      getStringField(targetData, "tag"),
+			ID:       getStringField(targetData, "id"),
+		}
+	}
+
+	// Parse added nodes
+	if added, ok := data["added"].([]interface{}); ok {
+		for _, nodeData := range added {
+			if nm, ok := nodeData.(map[string]interface{}); ok {
+				event.Added = append(event.Added, MutationNode{
+					Selector: getStringField(nm, "selector"),
+					Tag:      getStringField(nm, "tag"),
+					ID:       getStringField(nm, "id"),
+					HTML:     getStringField(nm, "html"),
+				})
+			}
+		}
+	}
+
+	// Parse removed nodes
+	if removed, ok := data["removed"].([]interface{}); ok {
+		for _, nodeData := range removed {
+			if nm, ok := nodeData.(map[string]interface{}); ok {
+				event.Removed = append(event.Removed, MutationNode{
+					Selector: getStringField(nm, "selector"),
+					Tag:      getStringField(nm, "tag"),
+					ID:       getStringField(nm, "id"),
+					HTML:     getStringField(nm, "html"),
+				})
+			}
+		}
+	}
+
+	// Parse attribute change
+	if attrData, ok := data["attribute"].(map[string]interface{}); ok {
+		event.Attribute = &AttributeChange{
+			Name:     getStringField(attrData, "name"),
+			OldValue: getStringField(attrData, "old_value"),
+			NewValue: getStringField(attrData, "new_value"),
+		}
+	}
+
+	return event
+}
+
+// getBoolField extracts a boolean from a map field.
+func getBoolField(data map[string]interface{}, key string) bool {
+	if v, ok := data[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
 }
