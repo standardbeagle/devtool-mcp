@@ -42,13 +42,33 @@ To set up GitHub Pages for your fork:
 
 ### Installation
 
+**npm** (recommended for Node.js users):
 ```bash
-# From source
+npm install -g @anthropic/devtool-mcp
+```
+
+**pip/uv** (recommended for Python users):
+```bash
+pip install devtool-mcp
+# or
+uv pip install devtool-mcp
+```
+
+**One-liner bash install**:
+```bash
+curl -fsSL https://raw.githubusercontent.com/standardbeagle/devtool-mcp/main/install.sh | bash
+```
+
+**From source**:
+```bash
 git clone https://github.com/standardbeagle/devtool-mcp.git
 cd devtool-mcp
 make build
+make install-local
+```
 
-# Or install directly
+**Go install**:
+```bash
 go install github.com/standardbeagle/devtool-mcp@latest
 ```
 
@@ -151,6 +171,7 @@ window.__devtool.selectElement()          // Interactive picker
 | `proxy` | Manage reverse proxies |
 | `proxylog` | Query traffic logs and errors |
 | `currentpage` | View grouped page sessions |
+| `daemon` | Manage the background daemon service |
 
 ## Architecture
 

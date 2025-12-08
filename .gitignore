@@ -33,3 +33,18 @@ docs-site/.docusaurus/
 # Environment
 .env
 .env.local
+
+# npm package
+node_modules/
+bin/devtool-mcp
+bin/devtool-mcp.exe
+dist/
+*.tgz
+
+# Python package
+python/dist/
+python/build/
+python/*.egg-info/
+__pycache__/
+*.pyc
+.venv/

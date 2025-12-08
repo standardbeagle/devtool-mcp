@@ -1,0 +1,55 @@
+{
+  "name": "@anthropic/devtool-mcp",
+  "version": "0.3.0",
+  "description": "MCP server providing development tooling capabilities - project detection, process management, reverse proxy with frontend diagnostics",
+  "main": "dist/index.js",
+  "bin": {
+    "devtool-mcp": "bin/devtool-mcp"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "prepack": "node scripts/prepack.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "development",
+    "devtools",
+    "proxy",
+    "debugging",
+    "frontend",
+    "diagnostics",
+    "accessibility",
+    "process-management"
+  ],
+  "author": "Standard Beagle",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/standardbeagle/devtool-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/standardbeagle/devtool-mcp/issues"
+  },
+  "homepage": "https://standardbeagle.github.io/devtool-mcp/",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "scripts/",
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ]
+}

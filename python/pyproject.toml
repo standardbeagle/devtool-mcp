@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devtool-mcp"
+version = "0.3.0"
+description = "MCP server providing development tooling capabilities - project detection, process management, reverse proxy with frontend diagnostics"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Standard Beagle", email = "dev@standardbeagle.com" }
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "development",
+    "devtools",
+    "proxy",
+    "debugging",
+    "frontend",
+    "diagnostics",
+    "accessibility",
+    "process-management"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Internet :: Proxy Servers",
+]
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://standardbeagle.github.io/devtool-mcp/"
+Documentation = "https://standardbeagle.github.io/devtool-mcp/"
+Repository = "https://github.com/standardbeagle/devtool-mcp"
+Issues = "https://github.com/standardbeagle/devtool-mcp/issues"
+Changelog = "https://github.com/standardbeagle/devtool-mcp/blob/main/CHANGELOG.md"
+
+[project.scripts]
+devtool-mcp = "devtool_mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devtool_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+]

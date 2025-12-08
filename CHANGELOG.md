@@ -1,5 +1,61 @@
 # Changelog - DevTool MCP
 
+## [0.3.0] - 2025-12-07
+
+### Added
+
+#### Daemon Architecture
+- **Background daemon** for persistent state across MCP client disconnections
+- **Session handoff**: Multiple MCP clients can interact with the same processes/proxies
+- **Auto-start**: Daemon starts automatically on first tool call
+- **Socket-based IPC**: Text protocol for client-daemon communication
+- **New `daemon` MCP tool** with status, info, start, stop, restart actions
+
+#### Publishing Infrastructure
+- **npm package**: `@anthropic/devtool-mcp` with automatic binary download
+- **PyPI package**: `devtool-mcp` for pip/uv installation
+- **Bash installer**: One-liner installation via curl
+- **GitHub Actions**: Automated release workflow for all platforms
+
+#### Documentation
+- Reorganized Frontend API docs into hierarchical categories
+- Added daemon tool documentation
+- Fixed MDX parsing issues in documentation
+
+### Changed
+- Version bumped to 0.3.0
+- Makefile uses `install -m 755` instead of `cp` for proper permissions
+- CLAUDE.md refocused on development guidance
+
+### Installation Methods
+
+**npm**:
+```bash
+npm install -g @anthropic/devtool-mcp
+```
+
+**pip/uv**:
+```bash
+pip install devtool-mcp
+# or
+uv pip install devtool-mcp
+```
+
+**Bash (one-liner)**:
+```bash
+curl -fsSL https://raw.githubusercontent.com/standardbeagle/devtool-mcp/main/install.sh | bash
+```
+
+**From source**:
+```bash
+git clone https://github.com/standardbeagle/devtool-mcp.git
+cd devtool-mcp
+make build
+make install-local
+```
+
+---
+
 ## [Unreleased] - 2025-12-05
 
 ### Added - Async JavaScript Execution & Response Logging
