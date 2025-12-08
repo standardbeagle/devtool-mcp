@@ -44,7 +44,7 @@ To set up GitHub Pages for your fork:
 
 **npm** (recommended for Node.js users):
 ```bash
-npm install -g @anthropic/devtool-mcp
+npm install -g @standardbeagle/devtool-mcp
 ```
 
 **pip/uv** (recommended for Python users):

@@ -12,7 +12,7 @@
 - **New `daemon` MCP tool** with status, info, start, stop, restart actions
 
 #### Publishing Infrastructure
-- **npm package**: `@anthropic/devtool-mcp` with automatic binary download
+- **npm package**: `@standardbeagle/devtool-mcp` with automatic binary download
 - **PyPI package**: `devtool-mcp` for pip/uv installation
 - **Bash installer**: One-liner installation via curl
 - **GitHub Actions**: Automated release workflow for all platforms
@@ -31,7 +31,7 @@
 
 **npm**:
 ```bash
-npm install -g @anthropic/devtool-mcp
+npm install -g @standardbeagle/devtool-mcp
 ```
 
 **pip/uv**:
