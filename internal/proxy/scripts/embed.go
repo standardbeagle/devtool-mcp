@@ -48,6 +48,12 @@ var (
 	//go:embed mutation.js
 	mutationJS string
 
+	//go:embed indicator.js
+	indicatorJS string
+
+	//go:embed sketch.js
+	sketchJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -146,7 +152,17 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(mutationJS))
 	sb.WriteString("\n\n")
 
-	// 14. API (assembles all modules, must be last)
+	// 14. Sketch mode (depends on core)
+	sb.WriteString("  // Sketch mode module\n")
+	sb.WriteString(wrapModule(sketchJS))
+	sb.WriteString("\n\n")
+
+	// 15. Floating indicator (depends on core, utils, sketch)
+	sb.WriteString("  // Floating indicator module\n")
+	sb.WriteString(wrapModule(indicatorJS))
+	sb.WriteString("\n\n")
+
+	// 16. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -214,6 +230,8 @@ func GetScriptNames() []string {
 		"audit.js",
 		"interaction.js",
 		"mutation.js",
+		"sketch.js",
+		"indicator.js",
 		"api.js",
 	}
 }

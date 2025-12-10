@@ -28,6 +28,10 @@ const (
 	LogTypeInteraction LogEntryType = "interaction"
 	// LogTypeMutation represents a DOM mutation event.
 	LogTypeMutation LogEntryType = "mutation"
+	// LogTypePanelMessage represents a message from the floating indicator panel.
+	LogTypePanelMessage LogEntryType = "panel_message"
+	// LogTypeSketch represents a sketch/wireframe from the sketch mode.
+	LogTypeSketch LogEntryType = "sketch"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -200,18 +204,61 @@ type AttributeChange struct {
 	NewValue string `json:"new_value,omitempty"`
 }
 
+// PanelMessage represents a message from the floating indicator panel.
+type PanelMessage struct {
+	ID          string              `json:"id"`
+	Timestamp   time.Time           `json:"timestamp"`
+	Message     string              `json:"message"`
+	Attachments []PanelAttachment   `json:"attachments,omitempty"`
+	URL         string              `json:"url"`
+}
+
+// PanelAttachment represents an attachment to a panel message.
+type PanelAttachment struct {
+	Type     string                 `json:"type"` // element, screenshot_area
+	Selector string                 `json:"selector,omitempty"`
+	Tag      string                 `json:"tag,omitempty"`
+	ID       string                 `json:"id,omitempty"`
+	Classes  []string               `json:"classes,omitempty"`
+	Text     string                 `json:"text,omitempty"`
+	Area     *ScreenshotArea        `json:"area,omitempty"`
+	Data     map[string]interface{} `json:"data,omitempty"`
+}
+
+// ScreenshotArea represents a selected area for screenshot.
+type ScreenshotArea struct {
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Data   string `json:"data,omitempty"` // Base64 image data
+}
+
+// SketchEntry represents a sketch/wireframe from sketch mode.
+type SketchEntry struct {
+	ID           string                 `json:"id"`
+	Timestamp    time.Time              `json:"timestamp"`
+	URL          string                 `json:"url"`
+	Sketch       map[string]interface{} `json:"sketch"`        // JSON-serialized sketch data
+	ImageData    string                 `json:"image_data"`    // Base64 PNG of the sketch
+	FilePath     string                 `json:"file_path"`     // Path to saved image file
+	ElementCount int                    `json:"element_count"` // Number of elements in sketch
+}
+
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
-	Type        LogEntryType       `json:"type"`
-	HTTP        *HTTPLogEntry      `json:"http,omitempty"`
-	Error       *FrontendError     `json:"error,omitempty"`
-	Performance *PerformanceMetric `json:"performance,omitempty"`
-	Custom      *CustomLog         `json:"custom,omitempty"`
-	Screenshot  *Screenshot        `json:"screenshot,omitempty"`
-	Execution   *ExecutionResult   `json:"execution,omitempty"`
-	Response    *ExecutionResponse `json:"response,omitempty"`
-	Interaction *InteractionEvent  `json:"interaction,omitempty"`
-	Mutation    *MutationEvent     `json:"mutation,omitempty"`
+	Type         LogEntryType       `json:"type"`
+	HTTP         *HTTPLogEntry      `json:"http,omitempty"`
+	Error        *FrontendError     `json:"error,omitempty"`
+	Performance  *PerformanceMetric `json:"performance,omitempty"`
+	Custom       *CustomLog         `json:"custom,omitempty"`
+	Screenshot   *Screenshot        `json:"screenshot,omitempty"`
+	Execution    *ExecutionResult   `json:"execution,omitempty"`
+	Response     *ExecutionResponse `json:"response,omitempty"`
+	Interaction  *InteractionEvent  `json:"interaction,omitempty"`
+	Mutation     *MutationEvent     `json:"mutation,omitempty"`
+	PanelMessage *PanelMessage      `json:"panel_message,omitempty"`
+	Sketch       *SketchEntry       `json:"sketch,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
@@ -303,6 +350,22 @@ func (tl *TrafficLogger) LogMutation(entry MutationEvent) {
 	tl.log(LogEntry{
 		Type:     LogTypeMutation,
 		Mutation: &entry,
+	})
+}
+
+// LogPanelMessage adds a panel message entry.
+func (tl *TrafficLogger) LogPanelMessage(entry PanelMessage) {
+	tl.log(LogEntry{
+		Type:         LogTypePanelMessage,
+		PanelMessage: &entry,
+	})
+}
+
+// LogSketch adds a sketch entry.
+func (tl *TrafficLogger) LogSketch(entry SketchEntry) {
+	tl.log(LogEntry{
+		Type:   LogTypeSketch,
+		Sketch: &entry,
 	})
 }
 
@@ -437,6 +500,14 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeMutation:
 		if entry.Mutation != nil {
 			timestamp = entry.Mutation.Timestamp
+		}
+	case LogTypePanelMessage:
+		if entry.PanelMessage != nil {
+			timestamp = entry.PanelMessage.Timestamp
+		}
+	case LogTypeSketch:
+		if entry.Sketch != nil {
+			timestamp = entry.Sketch.Timestamp
 		}
 	}
 

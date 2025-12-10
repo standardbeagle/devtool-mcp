@@ -17,6 +17,8 @@
   var audit = window.__devtool_audit;
   var interactions = window.__devtool_interactions;
   var mutations = window.__devtool_mutations;
+  var indicator = window.__devtool_indicator;
+  var sketch = window.__devtool_sketch;
 
   // Main DevTool API
   window.__devtool = {
@@ -144,6 +146,36 @@
     // ========================================================================
 
     mutations: mutations,
+
+    // ========================================================================
+    // FLOATING INDICATOR
+    // ========================================================================
+
+    indicator: {
+      show: indicator.show,
+      hide: indicator.hide,
+      toggle: indicator.toggle,
+      togglePanel: indicator.togglePanel,
+      destroy: indicator.destroy
+    },
+
+    // ========================================================================
+    // SKETCH MODE
+    // ========================================================================
+
+    sketch: {
+      open: sketch.init,
+      close: sketch.close,
+      toggle: sketch.toggle,
+      save: sketch.saveAndSend,
+      toJSON: sketch.toJSON,
+      fromJSON: sketch.fromJSON,
+      toDataURL: sketch.toDataURL,
+      setTool: sketch.setTool,
+      undo: sketch.undo,
+      redo: sketch.redo,
+      clear: sketch.clearAll
+    },
 
     // ========================================================================
     // COMPOSITE CONVENIENCE FUNCTIONS
@@ -282,4 +314,6 @@
   console.log('  __devtool.screenshot("my-screenshot")');
   console.log('  __devtool.interactions.getLastClickContext()');
   console.log('  __devtool.mutations.highlightRecent(5000)');
+  console.log('  __devtool.indicator.toggle() - Toggle floating indicator');
+  console.log('  __devtool.sketch.open() - Open sketch mode');
 })();

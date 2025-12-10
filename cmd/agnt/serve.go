@@ -1,0 +1,186 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"devtool-mcp/internal/daemon"
+	"devtool-mcp/internal/process"
+	"devtool-mcp/internal/proxy"
+	"devtool-mcp/internal/tools"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/spf13/cobra"
+)
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Run as MCP server",
+	Long: `Run as an MCP server that communicates with AI assistants.
+
+By default, uses a background daemon for persistent state.
+Use --legacy for direct process management (state lost on exit).`,
+	Run: runServe,
+}
+
+var (
+	serveLegacy bool
+)
+
+func init() {
+	serveCmd.Flags().BoolVar(&serveLegacy, "legacy", false, "Run in legacy mode (no daemon)")
+}
+
+func runServe(cmd *cobra.Command, args []string) {
+	socketPath, _ := cmd.Flags().GetString("socket")
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+
+	if serveLegacy {
+		runLegacyServer()
+	} else {
+		runDaemonClient(socketPath)
+	}
+}
+
+// runDaemonClient runs the MCP server that communicates with the daemon.
+func runDaemonClient(socketPath string) {
+	// Create root context with signal cancellation
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+	defer cancel()
+
+	// Configure daemon tools with auto-start
+	config := daemon.AutoStartConfig{
+		SocketPath:    socketPath,
+		StartTimeout:  5 * time.Second,
+		RetryInterval: 100 * time.Millisecond,
+		MaxRetries:    50,
+	}
+
+	dt := tools.NewDaemonTools(config)
+	defer dt.Close()
+
+	// Create MCP server
+	server := mcp.NewServer(
+		&mcp.Implementation{
+			Name:    appName,
+			Version: appVersion,
+		},
+		&mcp.ServerOptions{
+			Instructions: `Development tool server for project detection, process management, and reverse proxy with traffic logging.
+
+Uses a background daemon for persistent state across connections:
+- Processes and proxies survive client disconnections
+- State is shared across multiple MCP clients
+- Auto-starts daemon if not running
+
+Available tools:
+- detect: Detect project type and available scripts
+- run: Run scripts or raw commands (background/foreground modes)
+- proc: Manage processes (status, output, stop, list, cleanup_port)
+- proxy: Reverse proxy with traffic logging and JS instrumentation
+- proxylog: Query proxy traffic logs
+- currentpage: View active page sessions
+- daemon: Manage the background daemon service`,
+		},
+	)
+
+	// Register daemon-aware tools
+	tools.RegisterDaemonTools(server, dt)
+	tools.RegisterDaemonManagementTool(server, dt)
+
+	// Handle context cancellation
+	go func() {
+		<-ctx.Done()
+		log.Println("MCP client shutdown signal received...")
+	}()
+
+	// Run server over stdio
+	log.SetOutput(os.Stderr)
+	log.Printf("Starting %s v%s (daemon mode)", appName, appVersion)
+
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		if ctx.Err() == nil {
+			log.Fatalf("Server error: %v", err)
+		}
+	}
+
+	log.Println("MCP client shutdown complete")
+}
+
+// runLegacyServer runs in the original mode without a daemon.
+func runLegacyServer() {
+	// Create root context with signal cancellation
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+	defer cancel()
+
+	// Initialize process manager with default config
+	pm := process.NewProcessManager(process.ManagerConfig{
+		DefaultTimeout:    0,
+		MaxOutputBuffer:   process.DefaultBufferSize,
+		GracefulTimeout:   5 * time.Second,
+		HealthCheckPeriod: 10 * time.Second,
+	})
+
+	// Initialize proxy manager
+	proxym := proxy.NewProxyManager()
+
+	// Create MCP server
+	server := mcp.NewServer(
+		&mcp.Implementation{
+			Name:    appName,
+			Version: appVersion,
+		},
+		&mcp.ServerOptions{
+			Instructions: "Development tool server for project detection, process management, and reverse proxy with traffic logging. Running in legacy mode - state will be lost when server stops.",
+		},
+	)
+
+	// Register legacy tools (direct process management)
+	tools.RegisterProcessTools(server, pm)
+	tools.RegisterProjectTools(server)
+	tools.RegisterProxyTools(server, proxym)
+
+	// Handle shutdown in background
+	go func() {
+		<-ctx.Done()
+		log.Println("Shutdown signal received, stopping all processes and proxies...")
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(),
+			2*time.Second,
+		)
+		defer shutdownCancel()
+
+		if err := pm.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Process manager shutdown error: %v", err)
+		}
+
+		if err := proxym.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Proxy manager shutdown error: %v", err)
+		}
+	}()
+
+	// Run server over stdio
+	log.SetOutput(os.Stderr)
+	log.Printf("Starting %s v%s (legacy mode)", appName, appVersion)
+
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		if ctx.Err() == nil {
+			log.Fatalf("Server error: %v", err)
+		}
+	}
+
+	log.Println("Server shutdown complete")
+}

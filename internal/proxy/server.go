@@ -57,6 +57,9 @@ type ProxyServer struct {
 
 	// Pending executions for async results
 	pendingExecs sync.Map // map[string]chan *ExecutionResult
+
+	// Overlay notifier for sending events to agent overlay
+	overlayNotifier *OverlayNotifier
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -86,17 +89,18 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	}
 
 	ps := &ProxyServer{
-		ID:            config.ID,
-		TargetURL:     targetURL,
-		ListenAddr:    fmt.Sprintf(":%d", config.ListenPort),
-		Path:          config.Path,
-		logger:        NewTrafficLogger(config.MaxLogSize),
-		pageTracker:   NewPageTracker(100, 5*time.Minute),
-		ready:         make(chan struct{}),
-		autoRestart:   config.AutoRestart,
-		maxRestarts:   5,               // Max 5 restarts
-		restartWindow: 1 * time.Minute, // Within 1 minute window
-		restarts:      make([]time.Time, 0, 5),
+		ID:              config.ID,
+		TargetURL:       targetURL,
+		ListenAddr:      fmt.Sprintf(":%d", config.ListenPort),
+		Path:            config.Path,
+		logger:          NewTrafficLogger(config.MaxLogSize),
+		pageTracker:     NewPageTracker(100, 5*time.Minute),
+		ready:           make(chan struct{}),
+		autoRestart:     config.AutoRestart,
+		maxRestarts:     5,               // Max 5 restarts
+		restartWindow:   1 * time.Minute, // Within 1 minute window
+		restarts:        make([]time.Time, 0, 5),
+		overlayNotifier: NewOverlayNotifier(),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins for development
@@ -334,6 +338,17 @@ func (ps *ProxyServer) PageTracker() *PageTracker {
 // Use this to wait for server readiness instead of polling or sleeping.
 func (ps *ProxyServer) Ready() <-chan struct{} {
 	return ps.ready
+}
+
+// SetOverlayEndpoint configures the overlay endpoint for forwarding events.
+// Example: "http://127.0.0.1:19191"
+func (ps *ProxyServer) SetOverlayEndpoint(endpoint string) {
+	ps.overlayNotifier.SetEndpoint(endpoint)
+}
+
+// OverlayNotifier returns the overlay notifier for direct access.
+func (ps *ProxyServer) OverlayNotifier() *OverlayNotifier {
+	return ps.overlayNotifier
 }
 
 // Stats returns proxy statistics.
@@ -873,6 +888,35 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					ps.pageTracker.TrackMutation(mutation)
 				}
 			}
+
+		case "panel_message":
+			// Handle message from floating indicator panel
+			panelMsg := parsePanelMessage(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogPanelMessage(panelMsg)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyPanelMessage(ps.ID, &panelMsg)
+			}
+
+		case "sketch":
+			// Handle sketch/wireframe from sketch mode
+			sketchEntry := parseSketchEntry(msg.Data, id, timestamp, msg.URL)
+
+			// Save sketch image to temp file
+			if sketchEntry.ImageData != "" {
+				filePath, err := ps.saveScreenshot("sketch-"+id, sketchEntry.ImageData)
+				if err == nil {
+					sketchEntry.FilePath = filePath
+				}
+			}
+
+			ps.logger.LogSketch(sketchEntry)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry)
+			}
 		}
 	}
 }
@@ -1178,4 +1222,75 @@ func getBoolField(data map[string]interface{}, key string) bool {
 		}
 	}
 	return false
+}
+
+// parsePanelMessage parses a panel message from JSON data.
+func parsePanelMessage(data map[string]interface{}, id string, timestamp time.Time, url string) PanelMessage {
+	msg := PanelMessage{
+		ID:        id,
+		Timestamp: timestamp,
+		URL:       url,
+	}
+
+	// Parse payload
+	if payload, ok := data["payload"].(map[string]interface{}); ok {
+		msg.Message = getStringField(payload, "message")
+
+		// Parse attachments
+		if attachments, ok := payload["attachments"].([]interface{}); ok {
+			for _, attData := range attachments {
+				if am, ok := attData.(map[string]interface{}); ok {
+					att := PanelAttachment{
+						Type:     getStringField(am, "type"),
+						Selector: getStringField(am, "selector"),
+						Tag:      getStringField(am, "tag"),
+						ID:       getStringField(am, "id"),
+						Text:     getStringField(am, "text"),
+					}
+
+					// Parse classes
+					if classes, ok := am["classes"].([]interface{}); ok {
+						for _, c := range classes {
+							if s, ok := c.(string); ok {
+								att.Classes = append(att.Classes, s)
+							}
+						}
+					}
+
+					// Parse area (for screenshot_area type)
+					if area, ok := am["area"].(map[string]interface{}); ok {
+						att.Area = &ScreenshotArea{
+							X:      getIntField(area, "x"),
+							Y:      getIntField(area, "y"),
+							Width:  getIntField(area, "width"),
+							Height: getIntField(area, "height"),
+							Data:   getStringField(area, "data"),
+						}
+					}
+
+					msg.Attachments = append(msg.Attachments, att)
+				}
+			}
+		}
+	}
+
+	return msg
+}
+
+// parseSketchEntry parses a sketch entry from JSON data.
+func parseSketchEntry(data map[string]interface{}, id string, timestamp time.Time, url string) SketchEntry {
+	entry := SketchEntry{
+		ID:           id,
+		Timestamp:    timestamp,
+		URL:          url,
+		ElementCount: getIntField(data, "element_count"),
+		ImageData:    getStringField(data, "image"),
+	}
+
+	// Parse sketch data (store as-is for JSON flexibility)
+	if sketchData, ok := data["sketch"].(map[string]interface{}); ok {
+		entry.Sketch = sketchData
+	}
+
+	return entry
 }

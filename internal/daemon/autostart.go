@@ -93,8 +93,8 @@ func (c *AutoStartClient) startDaemon() error {
 		}
 	}
 
-	// Start daemon (dedicated daemon binary doesn't need subcommand, but it's harmless)
-	cmd := exec.Command(execPath, "daemon", "--socket", c.config.SocketPath)
+	// Start daemon with "daemon start" subcommand
+	cmd := exec.Command(execPath, "daemon", "start", "--socket", c.config.SocketPath)
 
 	// Detach from parent process
 	cmd.Stdin = nil

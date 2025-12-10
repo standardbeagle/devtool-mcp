@@ -7,9 +7,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is **devtool-mcp**, an MCP (Model Context Protocol) server that provides development tooling capabilities to AI assistants. It enables project type detection, script execution, long-running process management with output capture, and reverse proxy with traffic logging and frontend instrumentation.
 
 **MCP Server Name**: `devtool-mcp`
-**Version**: 0.1.0
+**Version**: 0.4.0
 **Protocol**: MCP over stdio
 **Language**: Go 1.24.2
+
+**Binaries** (all are copies of the same `agnt` binary):
+- `agnt`: Primary CLI tool - the only binary that is actually built
+- `devtool-mcp`: Copy of `agnt` for MCP backwards compatibility
+- `agnt-daemon`: Copy of `agnt` for daemon auto-start
+- `devtool-mcp-daemon`: Copy of `agnt` for daemon auto-start
+
+**Install Strategy**:
+Only `agnt` is compiled from `cmd/agnt/`. All other binaries are copies:
+```
+agnt (built) ──┬── devtool-mcp (copy, for MCP registration)
+               ├── agnt-daemon (copy, for daemon auto-start)
+               └── devtool-mcp-daemon (copy, for daemon auto-start)
+```
+
+**Why binary copies instead of self-exec?**
+The daemon auto-start needs to spawn a background process. Some sandboxed environments
+(like Claude Code) prevent a binary from fork/exec'ing itself. By having separate
+`{binary}-daemon` copies, the auto-start can exec a different file path, bypassing
+the fork prevention restriction.
+
+**MCP Registration** (claude_desktop_config.json):
+```json
+"devtool": {
+  "command": "devtool-mcp",
+  "args": ["serve"]
+}
+```
+
+Note: `devtool-mcp` without args also works (auto-detects non-terminal and runs serve),
+but explicit `serve` is recommended for clarity.
+
+**Why `agnt run` exists (MCP notification workaround)**:
+MCP servers cannot push notifications to clients like Claude Code - they can only
+respond to tool calls. The `agnt run` command is a workaround:
+
+1. `agnt run claude` wraps Claude Code (or any AI tool) in a PTY
+2. The overlay server (port 19191) receives events from the devtool-mcp proxy
+3. Events (like panel messages, sketches) are injected as synthetic stdin to the PTY
+4. This makes it appear as if the user typed the message
+
+```
+Browser Indicator ──► devtool-mcp Proxy ──► HTTP POST ──► agnt overlay ──► PTY stdin ──► Claude Code
+     (click Send)        (WebSocket)         (/event)      (port 19191)     (inject)      (sees input)
+```
+
+This allows the floating indicator in the browser to send messages that get typed
+into Claude Code as if the user typed them - working around MCP's lack of server push.
 
 **Core Features**:
 - Project type detection (Go, Node.js, Python)
@@ -18,12 +66,17 @@ This is **devtool-mcp**, an MCP (Model Context Protocol) server that provides de
 - Frontend error tracking and performance monitoring
 - WebSocket-based metrics collection
 - Daemon architecture for persistent state
+- Floating indicator with panel for sending messages to MCP
+- Sketch mode for wireframing (Excalidraw-like)
+- Agent overlay for PTY wrapper around AI tools
 
 ## Build & Development Commands
 
 ```bash
-# Build the server
+# Build binaries
 make build          # Produces ./devtool-mcp binary
+make build-agent    # Produces ./agnt binary
+make all            # Build both binaries
 
 # Run tests
 make test           # All tests with verbose output
@@ -37,8 +90,8 @@ make lint           # Run golangci-lint (must be installed)
 
 # Development
 make run            # Build and run server on stdio
-make install        # Install to $GOPATH/bin
-make install-local  # Install to ~/.local/bin
+make install        # Install all binaries to $GOPATH/bin
+make install-local  # Install all binaries to ~/.local/bin
 
 # Testing a single package
 go test -v ./internal/process
@@ -95,6 +148,50 @@ The MCP server uses a daemon-based architecture that separates the MCP protocol 
 **Protocol**: Client-daemon communication uses a simple text-based protocol:
 - Commands: `VERB [SUBVERB] [ARGS...] [LENGTH]\r\n[DATA]\r\n`
 - Responses: `OK|ERR|JSON|DATA|CHUNK|END [message|length]\r\n[data]\r\n`
+
+## Agent CLI
+
+The `agnt` binary provides a PTY wrapper for running AI coding tools with overlay features. It allows injecting synthetic input from external sources (like devtool proxy events).
+
+**Usage**:
+```bash
+# Run Claude Code with overlay
+agnt run claude --dangerously-skip-permissions
+
+# Run any AI tool
+agnt run gemini
+agnt run copilot
+agnt run opencode
+
+# Run as MCP server (same as devtool-mcp)
+agnt serve
+agnt serve --legacy  # Legacy mode without daemon
+
+# Manage daemon
+agnt daemon status
+agnt daemon start
+agnt daemon stop
+```
+
+**Subcommands**:
+- `run <command> [args...]`: Run an AI coding tool with PTY wrapper and overlay
+- `serve`: Run as MCP server (equivalent to `devtool-mcp`)
+- `daemon`: Manage the background daemon (status, start, stop, restart, info)
+
+**Overlay Features**:
+The overlay listens on port 19191 by default for WebSocket connections and HTTP endpoints:
+- `/ws`: WebSocket for bidirectional communication
+- `/health`: Health check endpoint
+- `/type`: POST endpoint to type text into the PTY
+- `/key`: POST endpoint to send key events
+- `/event`: POST endpoint to receive events from devtool-mcp proxy
+
+**Event Flow**:
+```
+Browser Indicator → WebSocket → devtool-mcp Proxy → HTTP → Agent Overlay → PTY → AI Tool
+```
+
+This allows the floating indicator in the browser to send messages that get typed into Claude Code (or any AI tool) as user input.
 
 ## Architecture Overview
 
@@ -189,11 +286,16 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 - `getStatus()`: Get detailed connection status
 - `interactions.getHistory()`, `interactions.getLastClick()`, `interactions.getLastClickContext()`: User interaction tracking
 - `mutations.getHistory()`, `mutations.highlightRecent()`: DOM mutation tracking with visual highlighting
+- `indicator.show/hide/toggle()`: Floating indicator control
+- `indicator.togglePanel()`: Toggle the indicator panel
+- `sketch.open/close/toggle()`: Sketch mode (Excalidraw-like wireframing)
+- `sketch.save()`: Save and send sketch to MCP
+- `sketch.toJSON/fromJSON()`: Serialize/deserialize sketch data
 - Plus ~50 diagnostic primitives (see `internal/proxy/scripts/`)
 
 **TrafficLogger** (`internal/proxy/logger.go`):
 - Circular buffer storage (default 1000 entries)
-- Nine log entry types: HTTP, Error, Performance, Custom, Screenshot, Execution, Response, Interaction, Mutation
+- Eleven log entry types: HTTP, Error, Performance, Custom, Screenshot, Execution, Response, Interaction, Mutation, PanelMessage, Sketch
 - Thread-safe with `sync.RWMutex` for read-heavy workloads
 - Atomic counters for statistics
 
@@ -267,7 +369,7 @@ tools.RegisterProxyTools(server, proxym)   // proxy, proxylog, currentpage
 
 ### Log Entry Types
 
-The proxy logger supports nine log entry types:
+The proxy logger supports eleven log entry types:
 
 | Type | Description | Source |
 |------|-------------|--------|
@@ -280,6 +382,8 @@ The proxy logger supports nine log entry types:
 | `response` | JavaScript execution responses | Browser response to exec |
 | `interaction` | User interactions (clicks, keyboard, scroll, etc.) | `window.__devtool_interactions` |
 | `mutation` | DOM mutations (added, removed, modified elements) | `window.__devtool_mutations` |
+| `panel_message` | Messages from floating indicator panel | Floating indicator "Send" button |
+| `sketch` | Sketches/wireframes from sketch mode | Sketch mode "Save & Send" button |
 
 ### Directory Filtering
 
@@ -329,8 +433,88 @@ The `window.__devtool` API includes ~50 diagnostic primitives for DOM inspection
 - Quality Auditing (10+): auditDOMComplexity, auditPageQuality, auditCSS, auditSecurity, etc.
 - Interaction Tracking: getHistory, getLastClick, getClicksOn, getMouseTrail, getLastClickContext
 - Mutation Tracking: getHistory, getAdded, getRemoved, getModified, highlightRecent, pause/resume
+- Floating Indicator: show, hide, toggle, togglePanel, destroy
+- Sketch Mode: open, close, toggle, save, toJSON, fromJSON, setTool, undo, redo, clear
 
 **Testing**: Use `test-diagnostics.html` as an interactive playground.
+
+### Floating Indicator Bug
+
+A draggable floating indicator that appears on proxied pages by default, providing quick access to DevTool features.
+
+**Features**:
+- **Shown by default** - Automatically visible on all proxied pages
+- Draggable positioning (remembers position in localStorage)
+- Connection status indicator (green/red dot)
+- Visibility preference persisted (hide once to keep hidden)
+- Expanding panel with:
+  - Text input for messages/notes
+  - Screenshot area selection
+  - Element selection for logging
+  - Quick access to sketch mode
+
+**Usage**:
+```javascript
+__devtool.indicator.show()       // Show the indicator
+__devtool.indicator.hide()       // Hide the indicator
+__devtool.indicator.toggle()     // Toggle visibility
+__devtool.indicator.togglePanel() // Toggle the expanded panel
+```
+
+**Panel Message Logging**: Messages sent from the panel are logged as `panel_message` type and can be queried via `proxylog`.
+
+### Sketch Mode (Wireframing)
+
+An Excalidraw-like drawing interface for creating wireframes and annotations directly on top of the UI.
+
+**Features**:
+- **Shape Tools**: Rectangle, ellipse, line, arrow, free-draw, text
+- **Wireframe Elements**: Button, input field, sticky note, image placeholder (Balsamiq-style)
+- **Sketchy Rendering**: Configurable roughness for hand-drawn look
+- **Full Editing**: Selection, move, resize, delete, undo/redo
+- **JSON Serialization**: Export/import sketches as JSON
+- **MCP Integration**: Save sketches to proxy logs with image export
+
+**Tools Available**:
+| Tool | Description |
+|------|-------------|
+| select | Select and move elements |
+| rectangle | Draw rectangles |
+| ellipse | Draw ellipses/circles |
+| line | Draw straight lines |
+| arrow | Draw arrows |
+| freedraw | Free-hand drawing |
+| text | Add text labels |
+| note | Sticky note (Balsamiq-style) |
+| button | Button wireframe element |
+| input | Input field wireframe |
+| image | Image placeholder |
+| eraser | Delete elements |
+
+**Usage**:
+```javascript
+__devtool.sketch.open()           // Enter sketch mode
+__devtool.sketch.close()          // Exit sketch mode
+__devtool.sketch.toggle()         // Toggle sketch mode
+__devtool.sketch.setTool('rectangle') // Select a tool
+__devtool.sketch.save()           // Save and send to MCP
+__devtool.sketch.toJSON()         // Export as JSON
+__devtool.sketch.fromJSON(data)   // Import from JSON
+__devtool.sketch.undo()           // Undo last action
+__devtool.sketch.redo()           // Redo action
+__devtool.sketch.clear()          // Clear all elements
+```
+
+**Keyboard Shortcuts** (in sketch mode):
+- `Escape`: Close sketch mode
+- `Delete/Backspace`: Delete selected elements
+- `Ctrl+Z`: Undo
+- `Ctrl+Shift+Z` or `Ctrl+Y`: Redo
+- `Ctrl+A`: Select all
+- `Ctrl+C`: Copy selection
+- `Ctrl+V`: Paste
+
+**Sketch Logging**: Sketches are logged as `sketch` type with both JSON data and PNG image.
 
 ## Testing Strategy
 
@@ -434,3 +618,5 @@ ManagerConfig{
 - **SSL/TLS support**: Currently HTTP only
 - **HAR export**: Export traffic logs in HAR format
 - **WebSocket logging**: Could log WebSocket frame data
+- remember this complicated install story
+- remember the complicated way that agnt run is setup to workaround the notification issue and the binary rename is there for the fork prevention issue
