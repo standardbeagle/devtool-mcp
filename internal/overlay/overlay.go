@@ -89,8 +89,13 @@ type Overlay struct {
 	// Rendering
 	renderer *Renderer
 
+	// Output gating for freeze/unfreeze
+	gate *OutputGate
+
 	// Callbacks
 	onAction func(Action) error
+	onFreeze func() // Called when screen should freeze (stop PTY output)
+	onUnfreeze func() // Called when screen should unfreeze (send SIGWINCH)
 
 	// Mutex for state changes
 	mu sync.Mutex
@@ -109,6 +114,10 @@ type Config struct {
 
 	// Action callback
 	OnAction func(Action) error
+
+	// Freeze/unfreeze callbacks for screen management
+	OnFreeze   func() // Called when menu opens (freeze PTY output)
+	OnUnfreeze func() // Called when menu closes (send SIGWINCH to redraw)
 }
 
 // DefaultConfig returns the default overlay configuration.
@@ -123,11 +132,13 @@ func DefaultConfig() Config {
 // New creates a new Overlay.
 func New(ptmx *os.File, width, height int, cfg Config) *Overlay {
 	o := &Overlay{
-		ptmx:     ptmx,
-		width:    width,
-		height:   height,
-		renderer: NewRenderer(os.Stdout, width, height),
-		onAction: cfg.OnAction,
+		ptmx:       ptmx,
+		width:      width,
+		height:     height,
+		renderer:   NewRenderer(os.Stdout, width, height),
+		onAction:   cfg.OnAction,
+		onFreeze:   cfg.OnFreeze,
+		onUnfreeze: cfg.OnUnfreeze,
 	}
 
 	if cfg.ShowIndicator {
@@ -138,6 +149,13 @@ func New(ptmx *os.File, width, height int, cfg Config) *Overlay {
 	}
 
 	return o
+}
+
+// SetGate sets the output gate for freeze/unfreeze control.
+func (o *Overlay) SetGate(gate *OutputGate) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.gate = gate
 }
 
 // State returns the current overlay state.
@@ -238,6 +256,9 @@ func (o *Overlay) ToggleIndicator() {
 }
 
 func (o *Overlay) showMenu() {
+	// Switch to alternate screen buffer - preserves main screen content
+	o.renderer.EnterAltScreen()
+
 	o.state.Store(int32(StateMenu))
 	o.menuStack = []Menu{MainMenu()}
 	o.selectedIndex = 0
@@ -254,8 +275,13 @@ func (o *Overlay) hideMenu() {
 		o.state.Store(int32(StateHidden))
 	}
 
-	o.renderer.ClearMenu()
-	o.draw()
+	// Exit alternate screen - automatically restores main screen content
+	o.renderer.ExitAltScreen()
+
+	// Redraw indicator bar (it's in the reserved row, not affected by alt screen)
+	if o.showBar.Load() {
+		o.draw()
+	}
 }
 
 func (o *Overlay) draw() {

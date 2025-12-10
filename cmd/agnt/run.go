@@ -113,11 +113,46 @@ func runCommand(cmd *cobra.Command, args []string) {
 	}
 }
 
+// spinner displays a loading animation and returns a stop function.
+func spinner(message string) func() {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		i := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				// Clear the spinner line
+				fmt.Fprintf(os.Stderr, "\r\033[K")
+				return
+			case <-ticker.C:
+				fmt.Fprintf(os.Stderr, "\r%s %s", frames[i%len(frames)], message)
+				i++
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		wg.Wait()
+	}
+}
+
 // runWithPTY runs a command in a PTY with overlay support.
 func runWithPTY(ctx context.Context, args []string, port int) error {
 	// Find the command
 	command := args[0]
 	cmdArgs := args[1:]
+
+	// Show startup animation
+	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 
 	// Create the command
 	c := commandWithArgs(command, cmdArgs...)
@@ -125,9 +160,11 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 
 	// Start the command with a pty
 	ptmx, err := pty.Start(c)
+	stopSpinner() // Stop spinner once PTY starts
 	if err != nil {
 		return fmt.Errorf("failed to start pty: %w", err)
 	}
+
 	defer func() {
 		_ = ptmx.Close()
 	}()
@@ -143,9 +180,14 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 	signal.Notify(sizeCh, syscall.SIGWINCH)
 	defer signal.Stop(sizeCh)
 
-	// Initial resize
-	if err := pty.InheritSize(os.Stdin, ptmx); err != nil {
-		log.Printf("error resizing pty: %s", err)
+	// Reserve bottom row for indicator bar by telling child the terminal is 1 row shorter.
+	// This prevents the child from drawing in our indicator area.
+	childHeight := height
+	if useTermOverlay && showIndicator && height > 1 {
+		childHeight = height - 1
+	}
+	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(childHeight), Cols: uint16(width)}); err != nil {
+		log.Printf("error setting pty size: %s", err)
 	}
 
 	// Set stdin in raw mode
@@ -183,6 +225,9 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 			return nil
 		}
 
+		// No freeze/unfreeze needed - menus use alternate screen buffer
+		// which preserves and restores the main screen automatically
+
 		termOverlay = overlay.New(ptmx, width, height, cfg)
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
 
@@ -198,6 +243,22 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 
 	var wg sync.WaitGroup
 
+	// Draw initial indicator bar after a brief delay for child to start
+	if termOverlay != nil && showIndicator {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-time.After(50 * time.Millisecond):
+				termOverlay.Redraw()
+			}
+		}()
+	}
+
 	// Handle terminal resize
 	wg.Add(1)
 	go func() {
@@ -209,14 +270,21 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 			case <-done:
 				return
 			case <-sizeCh:
-				if err := pty.InheritSize(os.Stdin, ptmx); err != nil {
+				w, h, err := term.GetSize(int(os.Stdin.Fd()))
+				if err != nil {
+					continue
+				}
+				// Reserve bottom row for indicator if enabled
+				ch := h
+				if termOverlay != nil && termOverlay.ShowIndicator() && h > 1 {
+					ch = h - 1
+				}
+				if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(ch), Cols: uint16(w)}); err != nil {
 					log.Printf("error resizing pty: %s", err)
 				}
-				// Update overlay dimensions
+				// Update overlay with full terminal dimensions (it draws in the reserved row)
 				if termOverlay != nil {
-					if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
-						termOverlay.SetSize(w, h)
-					}
+					termOverlay.SetSize(w, h)
 				}
 			}
 		}

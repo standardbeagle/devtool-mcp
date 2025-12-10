@@ -100,20 +100,35 @@ const (
 	IconOK           = "✓"
 )
 
+// Overlay region names for tracking.
+const (
+	RegionMenu  = "menu"
+	RegionInput = "input"
+)
+
 // Renderer handles drawing to the terminal.
 type Renderer struct {
-	out    io.Writer
-	width  int
-	height int
-	mu     sync.Mutex
+	out          io.Writer
+	width        int
+	height       int
+	mu           sync.Mutex
+	screenMgr    *ScreenManager
+	overlayStack *OverlayStack
+
+	// Track current overlay regions for proper clearing
+	currentMenuRegion  *ScreenRegion
+	currentInputRegion *ScreenRegion
 }
 
 // NewRenderer creates a new Renderer.
 func NewRenderer(out io.Writer, width, height int) *Renderer {
+	sm := NewScreenManager(out, width, height)
 	return &Renderer{
-		out:    out,
-		width:  width,
-		height: height,
+		out:          out,
+		width:        width,
+		height:       height,
+		screenMgr:    sm,
+		overlayStack: NewOverlayStack(sm),
 	}
 }
 
@@ -123,6 +138,7 @@ func (r *Renderer) SetSize(width, height int) {
 	defer r.mu.Unlock()
 	r.width = width
 	r.height = height
+	r.screenMgr.SetSize(width, height)
 }
 
 // write outputs a string without locking (caller must hold lock).
@@ -263,6 +279,31 @@ func (r *Renderer) ClearIndicator() {
 	r.write(CursorRestore + CursorShow)
 }
 
+// ClearScreen clears the entire screen and resets cursor to home.
+func (r *Renderer) ClearScreen() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Clear entire screen, move cursor home, reset scroll region
+	r.write(ClearScreen + CursorHome + ResetScroll)
+}
+
+// EnterAltScreen switches to the alternate screen buffer.
+// The main screen content is preserved and restored when ExitAltScreen is called.
+func (r *Renderer) EnterAltScreen() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.write(EnterAltScreen + CursorHome)
+}
+
+// ExitAltScreen switches back to the main screen buffer.
+// The main screen content that was preserved when EnterAltScreen was called is restored.
+func (r *Renderer) ExitAltScreen() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.write(ExitAltScreen)
+}
+
 // DrawMenu draws a popup menu in the center of the screen.
 func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	r.mu.Lock()
@@ -288,6 +329,17 @@ func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	startCol := (r.width - menuWidth) / 2
 	if startCol < 1 {
 		startCol = 1
+	}
+
+	// Track the region for later clearing (only on first draw, not updates)
+	if r.currentMenuRegion == nil {
+		r.currentMenuRegion = &ScreenRegion{
+			Row:    startRow,
+			Col:    startCol,
+			Width:  menuWidth,
+			Height: menuHeight,
+		}
+		r.overlayStack.Push(RegionMenu, *r.currentMenuRegion)
 	}
 
 	r.write(CursorSave + CursorHide)
@@ -349,6 +401,17 @@ func (r *Renderer) DrawInput(prompt, value string) {
 		startCol = 1
 	}
 
+	// Track the region for later clearing (only on first draw, not updates)
+	if r.currentInputRegion == nil {
+		r.currentInputRegion = &ScreenRegion{
+			Row:    startRow,
+			Col:    startCol,
+			Width:  inputWidth,
+			Height: inputHeight,
+		}
+		r.overlayStack.Push(RegionInput, *r.currentInputRegion)
+	}
+
 	r.write(CursorSave + CursorHide)
 
 	// Draw box
@@ -381,17 +444,33 @@ func (r *Renderer) DrawInput(prompt, value string) {
 	r.write(CursorRestore + CursorShow)
 }
 
-// ClearMenu clears the menu area (redraws the PTY content).
+// ClearMenu clears all overlay regions (menu and input dialogs).
+// This restores the screen by clearing the tracked regions.
 func (r *Renderer) ClearMenu() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// We can't easily restore the PTY content, so we just clear and let it redraw
-	// The PTY output will naturally fill the screen on next output
-	// For now, we'll just ensure the menu area is cleared
+	// Pop all overlays from the stack - this clears each tracked region
+	r.overlayStack.PopAll()
 
-	// This is a limitation - ideally we'd save/restore the screen content
-	// But that requires more complex terminal state management
+	// Reset tracked regions
+	r.currentMenuRegion = nil
+	r.currentInputRegion = nil
+}
+
+// ResetMenuRegions resets the tracked menu regions without clearing screen content.
+// Use this when relying on SIGWINCH to trigger a full redraw by the child process.
+func (r *Renderer) ResetMenuRegions() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Clear the overlay stack without actually clearing screen regions
+	// The child process will redraw everything via SIGWINCH
+	r.overlayStack.Clear()
+
+	// Reset tracked regions
+	r.currentMenuRegion = nil
+	r.currentInputRegion = nil
 }
 
 // drawBox draws a box with a title.
