@@ -15,6 +15,7 @@ const (
 	ActionRefreshStatus
 	ActionToggleIndicator
 	ActionConnectDaemon
+	ActionSummarize
 	ActionClose
 )
 
@@ -42,6 +43,7 @@ func MainMenu() Menu {
 			{Label: "Processes", Shortcut: 'p', SubMenu: processesMenu()},
 			{Label: "Proxies", Shortcut: 'x', SubMenu: proxiesMenu()},
 			{Label: "View logs", Shortcut: 'l', Action: ActionShowLogs},
+			{Label: "Summarize status", Shortcut: 'm', Action: ActionSummarize},
 			{Label: "Refresh status", Shortcut: 's', Action: ActionRefreshStatus},
 			{Label: "Toggle indicator", Shortcut: 'i', Action: ActionToggleIndicator},
 			{Label: "Close", Shortcut: 'q', Action: ActionClose},

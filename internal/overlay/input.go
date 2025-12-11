@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -28,6 +29,14 @@ type DaemonConnector interface {
 	IsConnected() bool
 }
 
+// StatusSummarizer is an interface for summarizing system status.
+type StatusSummarizer interface {
+	// Summarize aggregates all system data and generates a summary.
+	Summarize(ctx context.Context) (*SummaryResult, error)
+	// IsAvailable returns true if the AI channel is available.
+	IsAvailable() bool
+}
+
 // InputRouter routes input between the PTY and the overlay.
 type InputRouter struct {
 	ptmx            *os.File
@@ -40,6 +49,7 @@ type InputRouter struct {
 	outputFetcher   ProcessOutputFetcher
 	daemonConnector DaemonConnector
 	statusFetcher   *StatusFetcher
+	summarizer      StatusSummarizer
 
 	// Process viewer state
 	viewerActive bool
@@ -77,6 +87,11 @@ func (r *InputRouter) SetDaemonConnector(connector DaemonConnector) {
 // SetStatusFetcher sets the status fetcher for refreshing after connection.
 func (r *InputRouter) SetStatusFetcher(fetcher *StatusFetcher) {
 	r.statusFetcher = fetcher
+}
+
+// SetSummarizer sets the summarizer for generating AI summaries.
+func (r *InputRouter) SetSummarizer(summarizer StatusSummarizer) {
+	r.summarizer = summarizer
 }
 
 // GetLastDaemonError returns the last error from daemon connection attempt.
@@ -419,6 +434,42 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 				r.overlay.draw()
 			}
 		}
+
+	case ActionSummarize:
+		r.overlay.hideMenu()
+		if r.summarizer == nil {
+			// No summarizer configured - show error
+			r.overlay.mu.Unlock()
+			r.ptmx.WriteString("\r\n[agnt] No AI summarizer configured\r\n")
+			r.overlay.mu.Lock()
+			return
+		}
+		if !r.summarizer.IsAvailable() {
+			// AI agent not available
+			r.overlay.mu.Unlock()
+			r.ptmx.WriteString("\r\n[agnt] AI agent not available in PATH\r\n")
+			r.overlay.mu.Lock()
+			return
+		}
+
+		// Release lock during AI call (can take time)
+		r.overlay.mu.Unlock()
+		r.ptmx.WriteString("\r\n[agnt] Summarizing system status...\r\n")
+
+		// Call summarizer with 2 minute timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		result, err := r.summarizer.Summarize(ctx)
+		cancel()
+
+		if err != nil {
+			r.ptmx.WriteString("[agnt] Summary failed: " + err.Error() + "\r\n")
+		} else {
+			// Inject summary into PTY
+			r.ptmx.WriteString("\r\n--- Status Summary ---\r\n")
+			r.ptmx.WriteString(result.Summary)
+			r.ptmx.WriteString("\r\n--- End Summary ---\r\n")
+		}
+		r.overlay.mu.Lock()
 
 	default:
 		// Trigger action callback

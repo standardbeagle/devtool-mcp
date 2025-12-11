@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"devtool-mcp/internal/aichannel"
 	"devtool-mcp/internal/overlay"
 
 	"github.com/creack/pty"
@@ -249,6 +250,16 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 		daemonConnector := overlay.NewDaemonConnector(socketPath)
 		inputRouter.SetDaemonConnector(daemonConnector)
 
+		// Set up summarizer - detect first available AI agent
+		if agent := detectAIAgent(); agent != "" {
+			summarizer := overlay.NewSummarizer(overlay.SummarizerConfig{
+				SocketPath: socketPath,
+				Agent:      aichannel.AgentType(agent),
+				Timeout:    2 * time.Minute,
+			})
+			inputRouter.SetSummarizer(summarizer)
+		}
+
 		// Create output filter to protect the indicator bar from being overwritten
 		// Filter writes to gate (not directly to stdout)
 		if showIndicator {
@@ -433,4 +444,14 @@ func shellQuote(s string) string {
 	// Use single quotes, escaping any embedded single quotes
 	// 'foo'\''bar' -> foo'bar
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// detectAIAgent detects the first available AI agent in PATH.
+// Returns empty string if none found.
+func detectAIAgent() string {
+	agents := aichannel.DetectAvailableAgents()
+	if len(agents) > 0 {
+		return string(agents[0])
+	}
+	return ""
 }
