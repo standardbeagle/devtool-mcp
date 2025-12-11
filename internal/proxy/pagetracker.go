@@ -14,19 +14,23 @@ const (
 	MaxMutationsPerSession    = 100
 )
 
-// PageSession represents a page view and its associated resources.
+// PageSession represents a browser tab session and its navigation history.
+// All navigations within the same browser tab are grouped together.
 type PageSession struct {
-	ID              string             `json:"id"`
-	URL             string             `json:"url"`
-	BrowserSession  string             `json:"browser_session,omitempty"` // Browser tab session ID
-	PageTitle       string             `json:"page_title,omitempty"`
-	StartTime       time.Time          `json:"start_time"`
-	LastActivity    time.Time          `json:"last_activity"`
-	DocumentRequest *HTTPLogEntry      `json:"document_request,omitempty"`
+	ID             string    `json:"id"`
+	URL            string    `json:"url"`                       // Current/most recent URL
+	BrowserSession string    `json:"browser_session,omitempty"` // Browser tab session ID (from cookie)
+	PageTitle      string    `json:"page_title,omitempty"`
+	StartTime      time.Time `json:"start_time"`
+	LastActivity   time.Time `json:"last_activity"`
+	Active         bool      `json:"active"`
+
+	// Navigation history - all document requests in this tab session
+	Navigations     []HTTPLogEntry     `json:"navigations,omitempty"`
+	DocumentRequest *HTTPLogEntry      `json:"document_request,omitempty"` // Most recent document request (for backwards compat)
 	Resources       []HTTPLogEntry     `json:"resources"`
 	Errors          []FrontendError    `json:"errors,omitempty"`
 	Performance     *PerformanceMetric `json:"performance,omitempty"`
-	Active          bool               `json:"active"`
 
 	// User interaction tracking
 	Interactions     []InteractionEvent `json:"interactions,omitempty"`
@@ -39,13 +43,13 @@ type PageSession struct {
 
 // PageTracker tracks page sessions and groups requests by page.
 type PageTracker struct {
-	sessions              sync.Map // map[string]*PageSession (keyed by session ID)
-	urlToSession          sync.Map // map[string]string (URL to session ID)
-	browserSessionToPage  sync.Map // map[string]string (browser session ID to page session ID)
-	sessionSeq            atomic.Int64
-	maxSessions           int
-	sessionTimeout        time.Duration
-	mu                    sync.RWMutex
+	sessions             sync.Map // map[string]*PageSession (keyed by session ID)
+	urlToSession         sync.Map // map[string]string (URL to session ID)
+	browserSessionToPage sync.Map // map[string]string (browser session ID to page session ID)
+	sessionSeq           atomic.Int64
+	maxSessions          int
+	sessionTimeout       time.Duration
+	mu                   sync.RWMutex
 }
 
 // NewPageTracker creates a new page tracker.
@@ -65,12 +69,15 @@ func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker 
 
 // TrackHTTPRequest processes an HTTP request and associates it with a page session.
 func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
+	// Extract browser session ID from cookie
+	browserSessionID := extractBrowserSessionID(entry.RequestHeaders)
+
 	// Determine if this is a document (HTML) request
 	isDocument := isDocumentRequest(entry)
 
 	if isDocument {
-		// Create new page session
-		pt.createPageSession(entry)
+		// Create or update page session for this browser tab
+		pt.createOrUpdatePageSession(entry, browserSessionID)
 	} else {
 		// Associate resource with existing page session
 		pt.addResourceToSession(entry)
@@ -254,17 +261,41 @@ func (pt *PageTracker) Clear() {
 	pt.sessionSeq.Store(0)
 }
 
-// createPageSession creates a new page session for a document request.
-func (pt *PageTracker) createPageSession(entry HTTPLogEntry) {
-	sessionID := pt.generateSessionID()
+// createOrUpdatePageSession creates a new page session or updates an existing one for the same browser tab.
+func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSessionID string) {
 	now := time.Now()
 
+	// If we have a browser session ID, try to find existing session for this tab
+	if browserSessionID != "" {
+		existingSessionID := pt.findSessionByBrowserSession(browserSessionID)
+		if existingSessionID != "" {
+			val, ok := pt.sessions.Load(existingSessionID)
+			if ok {
+				session := val.(*PageSession)
+				// Update existing session with new navigation
+				session.URL = entry.URL
+				session.LastActivity = now
+				session.DocumentRequest = &entry
+				session.Navigations = append(session.Navigations, entry)
+				// Clear resources for new page (they belong to old navigation)
+				session.Resources = make([]HTTPLogEntry, 0)
+				pt.sessions.Store(existingSessionID, session)
+				pt.urlToSession.Store(normalizeURL(entry.URL), existingSessionID)
+				return
+			}
+		}
+	}
+
+	// Create new session
+	sessionID := pt.generateSessionID()
 	session := &PageSession{
 		ID:              sessionID,
 		URL:             entry.URL,
+		BrowserSession:  browserSessionID,
 		StartTime:       now,
 		LastActivity:    now,
 		DocumentRequest: &entry,
+		Navigations:     []HTTPLogEntry{entry},
 		Resources:       make([]HTTPLogEntry, 0),
 		Errors:          make([]FrontendError, 0),
 		Active:          true,
@@ -274,6 +305,11 @@ func (pt *PageTracker) createPageSession(entry HTTPLogEntry) {
 
 	pt.sessions.Store(sessionID, session)
 	pt.urlToSession.Store(normalizeURL(entry.URL), sessionID)
+
+	// Register browser session mapping
+	if browserSessionID != "" {
+		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+	}
 
 	// Cleanup old sessions if we exceed max
 	pt.cleanupOldSessions()
@@ -431,9 +467,80 @@ func isDocumentRequest(entry HTTPLogEntry) bool {
 		contentType = entry.ResponseHeaders["content-type"]
 	}
 
-	return strings.Contains(contentType, "text/html") ||
-		strings.HasSuffix(entry.URL, ".html") ||
-		(entry.Method == "GET" && !hasResourceExtension(entry.URL))
+	// Explicit HTML response - definitely a document
+	if strings.Contains(contentType, "text/html") {
+		return true
+	}
+
+	// Explicit .html file extension
+	if strings.HasSuffix(entry.URL, ".html") {
+		return true
+	}
+
+	// JSON/API responses are NOT documents
+	if strings.Contains(contentType, "application/json") ||
+		strings.Contains(contentType, "text/json") {
+		return false
+	}
+
+	// API paths are NOT documents (common patterns)
+	if isAPIPath(entry.URL) {
+		return false
+	}
+
+	// XHR/Fetch requests are typically NOT documents
+	// Check for XMLHttpRequest or fetch indicators in request headers
+	xhrHeader := entry.RequestHeaders["X-Requested-With"]
+	if xhrHeader == "" {
+		xhrHeader = entry.RequestHeaders["x-requested-with"]
+	}
+	if strings.EqualFold(xhrHeader, "XMLHttpRequest") {
+		return false
+	}
+
+	// Accept header suggests API call if it prefers JSON
+	acceptHeader := entry.RequestHeaders["Accept"]
+	if acceptHeader == "" {
+		acceptHeader = entry.RequestHeaders["accept"]
+	}
+	if strings.Contains(acceptHeader, "application/json") &&
+		!strings.Contains(acceptHeader, "text/html") {
+		return false
+	}
+
+	// GET request without resource extension - likely a document navigation
+	// but only if none of the above API indicators matched
+	return entry.Method == "GET" && !hasResourceExtension(entry.URL)
+}
+
+// isAPIPath checks if a URL path looks like an API endpoint.
+func isAPIPath(urlStr string) bool {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+
+	path := strings.ToLower(parsed.Path)
+
+	// Common API path patterns
+	apiPrefixes := []string{
+		"/api/",
+		"/v1/",
+		"/v2/",
+		"/v3/",
+		"/graphql",
+		"/rest/",
+		"/_api/",
+		"/ajax/",
+	}
+
+	for _, prefix := range apiPrefixes {
+		if strings.HasPrefix(path, prefix) || strings.Contains(path, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // hasResourceExtension checks if URL has a resource file extension.
@@ -503,4 +610,27 @@ func itoa(i int) string {
 		buf[pos] = '-'
 	}
 	return string(buf[pos:])
+}
+
+// extractBrowserSessionID extracts the __devtool_sid cookie from request headers.
+func extractBrowserSessionID(headers map[string]string) string {
+	// Try both capitalized and lowercase header names
+	cookieHeader := headers["Cookie"]
+	if cookieHeader == "" {
+		cookieHeader = headers["cookie"]
+	}
+	if cookieHeader == "" {
+		return ""
+	}
+
+	// Parse cookies - format is "name1=value1; name2=value2"
+	const cookieName = "__devtool_sid"
+	cookies := strings.Split(cookieHeader, ";")
+	for _, cookie := range cookies {
+		cookie = strings.TrimSpace(cookie)
+		if strings.HasPrefix(cookie, cookieName+"=") {
+			return strings.TrimPrefix(cookie, cookieName+"=")
+		}
+	}
+	return ""
 }

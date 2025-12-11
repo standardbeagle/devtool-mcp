@@ -13,24 +13,49 @@
   var MAX_RECONNECT_ATTEMPTS = 5;
 
   // Session ID - unique per browser tab/window, persists across page navigations
-  // Uses sessionStorage so each tab gets its own ID
+  // Uses a combination of cookie (for proxy visibility) and sessionStorage (for tab isolation)
+  var COOKIE_NAME = '__devtool_sid';
   var SESSION_STORAGE_KEY = '__devtool_session_id';
   var sessionId = null;
+
+  function getCookie(name) {
+    var cookies = document.cookie.split(';');
+    for (var i = 0; i < cookies.length; i++) {
+      var cookie = cookies[i].trim();
+      if (cookie.indexOf(name + '=') === 0) {
+        return cookie.substring(name.length + 1);
+      }
+    }
+    return null;
+  }
+
+  function setCookie(name, value) {
+    // Set cookie with path=/ so it's sent on all requests
+    // No expiry = session cookie (cleared when browser closes)
+    document.cookie = name + '=' + value + '; path=/; SameSite=Lax';
+  }
 
   function getOrCreateSessionId() {
     if (sessionId) return sessionId;
 
     try {
+      // First check sessionStorage for tab-specific ID
       sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
       if (!sessionId) {
         // Generate a unique session ID: timestamp + random
         sessionId = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
         sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
       }
+      // Always sync to cookie so proxy can see it on HTTP requests
+      setCookie(COOKIE_NAME, sessionId);
     } catch (e) {
       // sessionStorage not available (private mode, etc)
-      // Fall back to in-memory ID (won't persist across navigations)
-      sessionId = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
+      // Fall back to cookie-only (shared across tabs but still works)
+      sessionId = getCookie(COOKIE_NAME);
+      if (!sessionId) {
+        sessionId = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
+        setCookie(COOKIE_NAME, sessionId);
+      }
     }
     return sessionId;
   }
