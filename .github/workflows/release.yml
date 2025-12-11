@@ -43,22 +43,28 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          LDFLAGS="-s -w -X main.Version=${VERSION}"
+          LDFLAGS="-s -w -X main.appVersion=${VERSION}"
           EXT=""
           if [ "$GOOS" = "windows" ]; then
             EXT=".exe"
           fi
-          OUTPUT="devtool-mcp-${GOOS}-${GOARCH}${EXT}"
-          go build -ldflags="${LDFLAGS}" -o "${OUTPUT}" ./cmd/devtool-mcp/
 
-          # Also create a copy for daemon binary
-          cp "${OUTPUT}" "devtool-mcp-daemon-${GOOS}-${GOARCH}${EXT}"
+          # Build agnt (the primary binary)
+          AGNT_OUTPUT="agnt-${GOOS}-${GOARCH}${EXT}"
+          go build -ldflags="${LDFLAGS}" -o "${AGNT_OUTPUT}" ./cmd/agnt/
+
+          # Create copies for other binaries (all are copies of agnt)
+          cp "${AGNT_OUTPUT}" "devtool-mcp-${GOOS}-${GOARCH}${EXT}"
+          cp "${AGNT_OUTPUT}" "agnt-daemon-${GOOS}-${GOARCH}${EXT}"
+          cp "${AGNT_OUTPUT}" "devtool-mcp-daemon-${GOOS}-${GOARCH}${EXT}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: devtool-mcp-*
+          path: |
+            agnt-*
+            devtool-mcp-*
 
   release:
     name: Create release
@@ -76,13 +82,16 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
+          find artifacts -name 'agnt-*' -exec cp {} release/ \;
           find artifacts -name 'devtool-mcp-*' -exec cp {} release/ \;
           ls -la release/
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*
+          files: |
+            release/agnt-*
+            release/devtool-mcp-*
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
