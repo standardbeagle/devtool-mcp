@@ -221,3 +221,12 @@ func isPipeNotFound(err error) bool {
 		errStr == "The system cannot find the path specified." ||
 		os.IsNotExist(err)
 }
+
+// CleanupZombieDaemons is a no-op on Windows.
+// On Unix, this uses /proc to find zombie daemon processes.
+// Windows uses named pipes which are automatically cleaned up by the OS.
+func CleanupZombieDaemons(pipePath string) int {
+	// Windows named pipes don't leave zombie processes in the same way
+	// The checkExisting() method already handles stale PID files
+	return 0
+}
