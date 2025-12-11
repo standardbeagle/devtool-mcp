@@ -3,6 +3,8 @@ package overlay
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -13,8 +15,9 @@ import (
 
 // Summarizer aggregates system status and uses an AI channel to generate summaries.
 type Summarizer struct {
-	socketPath string
-	channel    *aichannel.Channel
+	socketPath  string
+	channel     *aichannel.Channel
+	debugOutput io.Writer
 }
 
 // SummarizerConfig configures the Summarizer.
@@ -27,6 +30,8 @@ type SummarizerConfig struct {
 	Args []string
 	// Timeout for AI response (default 2 minutes)
 	Timeout time.Duration
+	// DebugOutput is where debug messages are written (defaults to os.Stderr)
+	DebugOutput io.Writer
 }
 
 // NewSummarizer creates a new Summarizer.
@@ -39,9 +44,18 @@ func NewSummarizer(config SummarizerConfig) *Summarizer {
 	}
 
 	return &Summarizer{
-		socketPath: config.SocketPath,
-		channel:    aichannel.NewWithConfig(channelConfig),
+		socketPath:  config.SocketPath,
+		channel:     aichannel.NewWithConfig(channelConfig),
+		debugOutput: config.DebugOutput,
 	}
+}
+
+// debugWriter returns the debug output writer, defaulting to os.Stderr.
+func (s *Summarizer) debugWriter() io.Writer {
+	if s.debugOutput != nil {
+		return s.debugOutput
+	}
+	return os.Stderr
 }
 
 // IsAvailable returns true if the AI channel is available.
@@ -108,6 +122,11 @@ func (s *Summarizer) Summarize(ctx context.Context) (*SummaryResult, error) {
 
 	// Generate summary via AI
 	prompt := s.buildPrompt()
+
+	// Log what we're about to do for debugging
+	fmt.Fprintf(s.debugWriter(), "[agnt] Calling %s with %d bytes of context...\r\n",
+		s.channel.Config().Command, len(contextData))
+
 	summary, err := s.channel.Send(ctx, prompt, contextData)
 	if err != nil {
 		return nil, fmt.Errorf("AI summarization failed: %w", err)

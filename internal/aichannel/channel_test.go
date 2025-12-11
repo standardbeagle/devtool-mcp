@@ -31,12 +31,12 @@ func TestNewWithConfig(t *testing.T) {
 
 func TestConfigure_AppliesDefaults(t *testing.T) {
 	tests := []struct {
-		name                string
-		agent               AgentType
-		expectedCommand     string
-		expectedNonIntFlag  string
-		expectedQuietFlag   string
-		expectedUseStdin    bool
+		name               string
+		agent              AgentType
+		expectedCommand    string
+		expectedNonIntFlag string
+		expectedQuietFlag  string
+		expectedUseStdin   bool
 	}{
 		{
 			name:               "Claude",
@@ -337,4 +337,91 @@ func TestDetectAvailableAgents(t *testing.T) {
 	// The result depends on what's installed
 	agents := DetectAvailableAgents()
 	t.Logf("Detected available agents: %v", agents)
+}
+
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Plain text",
+			input:    "Hello World",
+			expected: "Hello World",
+		},
+		{
+			name:     "CSI color sequence",
+			input:    "\x1b[31mRed\x1b[0m Text",
+			expected: "Red Text",
+		},
+		{
+			name:     "Cursor movement",
+			input:    "\x1b[2J\x1b[HHello",
+			expected: "Hello",
+		},
+		{
+			name:     "Show cursor",
+			input:    "Text\x1b[?25h",
+			expected: "Text",
+		},
+		{
+			name:     "Carriage return removal",
+			input:    "Line1\r\nLine2",
+			expected: "Line1\nLine2",
+		},
+		{
+			name:     "OSC sequence with BEL",
+			input:    "\x1b]0;Title\x07Content",
+			expected: "Content",
+		},
+		{
+			name:     "Multiple sequences",
+			input:    "\x1b[32mGreen\x1b[0m and \x1b[34mBlue\x1b[0m",
+			expected: "Green and Blue",
+		},
+		{
+			name:     "Empty string",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := stripANSI(tt.input)
+			if result != tt.expected {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestConfigure_ClaudePTY(t *testing.T) {
+	ch := New()
+	ch.Configure(Config{Agent: AgentClaude})
+
+	if !ch.config.UsePTY {
+		t.Error("Claude should have UsePTY enabled by default")
+	}
+}
+
+func TestSend_WithPTY(t *testing.T) {
+	// Test PTY mode with echo command
+	ch := NewWithConfig(Config{
+		Agent:              AgentCustom,
+		Command:            "echo",
+		NonInteractiveFlag: "",
+		UsePTY:             true,
+		Timeout:            5 * time.Second,
+	})
+
+	result, err := ch.Send(context.Background(), "hello from PTY", "")
+	if err != nil {
+		t.Fatalf("Send with PTY failed: %v", err)
+	}
+
+	if result != "hello from PTY" {
+		t.Errorf("Expected 'hello from PTY', got %q", result)
+	}
 }

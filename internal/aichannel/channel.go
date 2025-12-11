@@ -6,9 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 // Common errors
@@ -55,6 +59,9 @@ type Config struct {
 
 	// UseStdin determines if context should be piped via stdin
 	UseStdin bool `json:"use_stdin"`
+
+	// UsePTY runs the command in a pseudo-terminal (required for some CLI tools)
+	UsePTY bool `json:"use_pty"`
 
 	// Timeout for the request (default 2 minutes)
 	Timeout time.Duration `json:"timeout,omitempty"`
@@ -108,6 +115,7 @@ func applyDefaults(config Config) Config {
 			config.OutputFormat = "text" // or "json", "stream-json"
 		}
 		config.UseStdin = true
+		config.UsePTY = true // Claude Code requires a PTY for -p mode
 
 	case AgentCopilot:
 		if config.Command == "" {
@@ -191,6 +199,16 @@ func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) 
 		return "", fmt.Errorf("%w: %s not found in PATH", ErrNotAvailable, c.config.Command)
 	}
 
+	// Use PTY mode if configured (required for some CLI tools like Claude Code)
+	if c.config.UsePTY {
+		return c.sendWithPTY(ctx, prompt, inputContext)
+	}
+
+	return c.sendWithPipe(ctx, prompt, inputContext)
+}
+
+// sendWithPipe runs the command with standard pipes (no PTY).
+func (c *Channel) sendWithPipe(ctx context.Context, prompt string, inputContext string) (string, error) {
 	// Build command arguments
 	args := c.buildArgs(prompt)
 
@@ -201,8 +219,9 @@ func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) 
 	// Create command
 	cmd := exec.CommandContext(execCtx, c.config.Command, args...)
 
-	// Set environment
+	// Set environment - inherit current environment and add custom vars
 	if len(c.config.Env) > 0 {
+		cmd.Env = os.Environ()
 		for k, v := range c.config.Env {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
@@ -238,6 +257,126 @@ func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) 
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// sendWithPTY runs the command in a pseudo-terminal.
+// This is required for CLI tools that need a TTY (like Claude Code).
+func (c *Channel) sendWithPTY(ctx context.Context, prompt string, inputContext string) (string, error) {
+	// Build command arguments
+	args := c.buildArgs(prompt)
+
+	// Create context with timeout
+	execCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+
+	// Create command
+	cmd := exec.CommandContext(execCtx, c.config.Command, args...)
+
+	// Set environment - inherit current environment and add custom vars
+	cmd.Env = os.Environ()
+	for k, v := range c.config.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Start the command with a PTY
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to start PTY: %w", err)
+	}
+	defer ptmx.Close()
+
+	// Write input context to PTY if configured
+	if inputContext != "" && c.config.UseStdin {
+		if _, err := ptmx.WriteString(inputContext); err != nil {
+			return "", fmt.Errorf("failed to write to PTY: %w", err)
+		}
+	}
+
+	// Read all output from PTY
+	var output bytes.Buffer
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := io.Copy(&output, ptmx)
+		done <- err
+	}()
+
+	// Wait for command to complete or context to be cancelled
+	waitErr := cmd.Wait()
+
+	// Wait for output reading to complete (with timeout for cleanup)
+	select {
+	case <-done:
+		// Output reading completed
+	case <-time.After(100 * time.Millisecond):
+		// Give up waiting for output
+	}
+
+	// Check for context timeout
+	if execCtx.Err() == context.DeadlineExceeded {
+		return "", ErrTimeout
+	}
+
+	if waitErr != nil {
+		// Check if it's just a signal error from context cancellation
+		if execCtx.Err() != nil {
+			return "", ErrTimeout
+		}
+		return "", fmt.Errorf("command failed: %w", waitErr)
+	}
+
+	// Clean ANSI escape sequences from output
+	result := stripANSI(output.String())
+	return strings.TrimSpace(result), nil
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	var result strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			// Check for CSI sequences (ESC [)
+			if s[i] == '[' {
+				// Skip until we hit a letter (the command byte)
+				for i++; i < len(s); i++ {
+					if (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z') {
+						break
+					}
+				}
+				inEscape = false
+				continue
+			}
+			// Check for OSC sequences (ESC ])
+			if s[i] == ']' {
+				// Skip until BEL or ST
+				for i++; i < len(s); i++ {
+					if s[i] == '\x07' { // BEL
+						break
+					}
+					if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\' { // ST
+						i++
+						break
+					}
+				}
+				inEscape = false
+				continue
+			}
+			// Single character escape
+			inEscape = false
+			continue
+		}
+		// Skip carriage returns (terminal line endings)
+		if s[i] == '\r' {
+			continue
+		}
+		result.WriteByte(s[i])
+	}
+	return result.String()
 }
 
 // buildArgs constructs the command arguments based on configuration.
