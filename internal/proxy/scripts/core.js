@@ -99,10 +99,29 @@
     }
   }
 
+  // Message handlers for other modules
+  var messageHandlers = [];
+
   // Handle messages from server
   function handleServerMessage(message) {
     if (message.type === 'execute') {
       executeJavaScript(message.id, message.code);
+    }
+
+    // Notify registered handlers
+    for (var i = 0; i < messageHandlers.length; i++) {
+      try {
+        messageHandlers[i](message);
+      } catch (err) {
+        console.error('[DevTool] Message handler error:', err);
+      }
+    }
+  }
+
+  // Register a message handler
+  function onMessage(handler) {
+    if (typeof handler === 'function') {
+      messageHandlers.push(handler);
     }
   }
 
@@ -167,7 +186,7 @@
     }
   }
 
-  // Send metric to server
+  // Send metric to server (JSON)
   function send(type, data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -179,6 +198,17 @@
         }));
       } catch (err) {
         console.error('[DevTool] Failed to send metric:', err);
+      }
+    }
+  }
+
+  // Send binary data to server (for audio streaming)
+  function sendBinary(data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(data);
+      } catch (err) {
+        console.error('[DevTool] Failed to send binary data:', err);
       }
     }
   }
@@ -274,6 +304,8 @@
   // Export for other modules
   window.__devtool_core = {
     send: send,
+    sendBinary: sendBinary,
+    onMessage: onMessage,
     ws: function() { return ws; },
     isConnected: function() {
       return ws && ws.readyState === WebSocket.OPEN;

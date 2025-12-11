@@ -54,7 +54,12 @@
     isDragging: false,
     isResizing: false,
     resizeHandle: null,
-    dragStartPos: null
+    dragStartPos: null,
+
+    // Voice annotation
+    voiceBtn: null,
+    isVoiceListening: false,
+    voiceAnnotationPos: null
   };
 
   // Tool definitions
@@ -462,6 +467,29 @@
       });
     });
 
+    // Voice button (if speech recognition is available)
+    var voice = window.__devtool_voice;
+    if (voice && voice.isSupported && voice.isSupported().any) {
+      var voiceSep = document.createElement('div');
+      voiceSep.style.cssText = STYLES.separator;
+      toolbar.appendChild(voiceSep);
+
+      var voiceBtn = document.createElement('button');
+      voiceBtn.id = '__devtool-voice-btn';
+      voiceBtn.style.cssText = STYLES.toolButton;
+      voiceBtn.title = 'Voice Annotation (click to speak)';
+      // Microphone icon
+      voiceBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z" fill="currentColor"/></svg>';
+
+      sketchState.voiceBtn = voiceBtn;
+
+      voiceBtn.onclick = function() {
+        toggleVoiceAnnotation();
+      };
+
+      toolbar.appendChild(voiceBtn);
+    }
+
     sketchState.toolbar = toolbar;
     container.appendChild(toolbar);
   }
@@ -652,10 +680,16 @@
   function setupEventListeners() {
     var canvas = sketchState.canvas;
 
-    canvas.addEventListener('mousedown', handleMouseDown);
-    canvas.addEventListener('mousemove', handleMouseMove);
-    canvas.addEventListener('mouseup', handleMouseUp);
+    // Use pointer events for stylus/pen support (Surface Pen, Apple Pencil, etc.)
+    // Pointer events provide pressure, tilt, and unified mouse/touch/pen handling
+    canvas.addEventListener('pointerdown', handlePointerDown);
+    canvas.addEventListener('pointermove', handlePointerMove);
+    canvas.addEventListener('pointerup', handlePointerUp);
+    canvas.addEventListener('pointercancel', handlePointerUp);
     canvas.addEventListener('dblclick', handleDoubleClick);
+
+    // Prevent default touch behaviors to enable smooth stylus drawing
+    canvas.style.touchAction = 'none';
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleKeyDown);
@@ -664,7 +698,12 @@
     window.addEventListener('resize', handleResize);
   }
 
-  function handleMouseDown(e) {
+  function handlePointerDown(e) {
+    // Capture pointer for smooth tracking even if cursor leaves canvas
+    if (e.target.setPointerCapture) {
+      e.target.setPointerCapture(e.pointerId);
+    }
+
     var pos = getCanvasPos(e);
     sketchState.isDrawing = true;
     sketchState.startPoint = pos;
@@ -690,7 +729,8 @@
       sketchState.currentElement = createElement('freedraw', {
         x: pos.x,
         y: pos.y,
-        points: [{ x: 0, y: 0 }]
+        // Store pressure/tilt data per point for stylus support
+        points: [{ x: 0, y: 0, pressure: pos.pressure, tiltX: pos.tiltX, tiltY: pos.tiltY }]
       });
     } else {
       sketchState.currentElement = createElement(sketchState.tool, {
@@ -702,7 +742,7 @@
     render();
   }
 
-  function handleMouseMove(e) {
+  function handlePointerMove(e) {
     var pos = getCanvasPos(e);
 
     if (!sketchState.isDrawing) {
@@ -728,9 +768,13 @@
         sketchState.selectionBox.height = pos.y - sketchState.selectionBox.y;
       }
     } else if (sketchState.tool === 'freedraw' && sketchState.currentElement) {
+      // Include pressure/tilt data for each point (stylus support)
       sketchState.currentElement.points.push({
         x: pos.x - sketchState.currentElement.x,
-        y: pos.y - sketchState.currentElement.y
+        y: pos.y - sketchState.currentElement.y,
+        pressure: pos.pressure,
+        tiltX: pos.tiltX,
+        tiltY: pos.tiltY
       });
     } else if (sketchState.currentElement) {
       sketchState.currentElement.width = pos.x - sketchState.startPoint.x;
@@ -740,7 +784,16 @@
     render();
   }
 
-  function handleMouseUp(e) {
+  function handlePointerUp(e) {
+    // Release pointer capture
+    if (e.target.releasePointerCapture && e.pointerId !== undefined) {
+      try {
+        e.target.releasePointerCapture(e.pointerId);
+      } catch (err) {
+        // Ignore - pointer may not have been captured
+      }
+    }
+
     var pos = getCanvasPos(e);
 
     if (sketchState.tool === 'select') {
@@ -843,7 +896,14 @@
     var rect = sketchState.canvas.getBoundingClientRect();
     return {
       x: (e.clientX - rect.left) / sketchState.scale - sketchState.offsetX,
-      y: (e.clientY - rect.top) / sketchState.scale - sketchState.offsetY
+      y: (e.clientY - rect.top) / sketchState.scale - sketchState.offsetY,
+      // Pointer event properties for stylus support
+      // pressure: 0-1 (0.5 default for mouse, varies for pen/touch)
+      // tiltX/tiltY: -90 to 90 degrees (0 for mouse)
+      pressure: typeof e.pressure === 'number' ? e.pressure : 0.5,
+      tiltX: typeof e.tiltX === 'number' ? e.tiltX : 0,
+      tiltY: typeof e.tiltY === 'number' ? e.tiltY : 0,
+      pointerType: e.pointerType || 'mouse'
     };
   }
 
@@ -1065,6 +1125,221 @@
     input.select();
   }
 
+  // ============================================================================
+  // VOICE ANNOTATION
+  // ============================================================================
+
+  function toggleVoiceAnnotation() {
+    var voice = window.__devtool_voice;
+    if (!voice) return;
+
+    if (sketchState.isVoiceListening) {
+      stopVoiceAnnotation();
+    } else {
+      startVoiceAnnotation();
+    }
+  }
+
+  function startVoiceAnnotation() {
+    var voice = window.__devtool_voice;
+    if (!voice) return;
+
+    // Initialize voice with callbacks
+    voice.init({
+      onResult: handleVoiceResult,
+      onError: handleVoiceError,
+      onStateChange: handleVoiceStateChange
+    });
+
+    // Default annotation position (center of canvas)
+    sketchState.voiceAnnotationPos = {
+      x: sketchState.canvas.width / 2 - 50,
+      y: sketchState.canvas.height / 2
+    };
+
+    // Start listening in annotate mode
+    voice.start('annotate', sketchState.voiceAnnotationPos);
+    sketchState.isVoiceListening = true;
+    updateVoiceButtonState();
+
+    // Show voice indicator
+    showVoiceIndicator();
+  }
+
+  function stopVoiceAnnotation() {
+    var voice = window.__devtool_voice;
+    if (!voice) return;
+
+    voice.stop();
+    sketchState.isVoiceListening = false;
+    updateVoiceButtonState();
+    hideVoiceIndicator();
+  }
+
+  function handleVoiceResult(result) {
+    if (!result.isFinal) {
+      // Show interim transcript in indicator
+      updateVoiceIndicator(result.transcript);
+      return;
+    }
+
+    // Final transcript - create text element
+    if (result.transcript && result.transcript.trim()) {
+      var pos = sketchState.voiceAnnotationPos || { x: 100, y: 100 };
+
+      var textEl = createElement('text', {
+        x: pos.x,
+        y: pos.y,
+        text: result.transcript.trim()
+      });
+
+      // Measure text dimensions
+      var ctx = sketchState.ctx;
+      ctx.font = textEl.fontSize + 'px ' + textEl.fontFamily;
+      var metrics = ctx.measureText(textEl.text);
+      textEl.width = metrics.width;
+      textEl.height = textEl.fontSize;
+
+      addElement(textEl);
+      render();
+
+      // Move next annotation position down
+      sketchState.voiceAnnotationPos.y += textEl.fontSize + 10;
+    }
+
+    // Stop listening after annotation (non-continuous mode)
+    stopVoiceAnnotation();
+  }
+
+  function handleVoiceError(error) {
+    console.error('[DevTool Sketch] Voice error:', error);
+    stopVoiceAnnotation();
+    hideVoiceIndicator();
+
+    // Show error briefly
+    showVoiceIndicator('Error: ' + (error.message || error.error));
+    setTimeout(hideVoiceIndicator, 3000);
+  }
+
+  function handleVoiceStateChange(state) {
+    sketchState.isVoiceListening = state.listening;
+    updateVoiceButtonState();
+
+    if (!state.listening) {
+      hideVoiceIndicator();
+    }
+  }
+
+  function updateVoiceButtonState() {
+    if (!sketchState.voiceBtn) return;
+
+    if (sketchState.isVoiceListening) {
+      sketchState.voiceBtn.style.cssText = STYLES.toolButton + ';' + STYLES.toolButtonActive + ';color:#e53935';
+      sketchState.voiceBtn.title = 'Stop voice (listening...)';
+    } else {
+      sketchState.voiceBtn.style.cssText = STYLES.toolButton;
+      sketchState.voiceBtn.title = 'Voice Annotation (click to speak)';
+    }
+  }
+
+  function showVoiceIndicator(text) {
+    var existing = document.getElementById('__devtool-voice-indicator');
+    if (existing) {
+      if (text) existing.textContent = text;
+      return;
+    }
+
+    var indicator = document.createElement('div');
+    indicator.id = '__devtool-voice-indicator';
+    indicator.style.cssText = [
+      'position: fixed',
+      'top: 80px',
+      'left: 50%',
+      'transform: translateX(-50%)',
+      'background: rgba(0,0,0,0.8)',
+      'color: white',
+      'padding: 12px 24px',
+      'border-radius: 24px',
+      'font-size: 14px',
+      'z-index: 2147483647',
+      'display: flex',
+      'align-items: center',
+      'gap: 10px',
+      'animation: devtool-voice-pulse 1.5s infinite'
+    ].join(';');
+
+    // Add pulse animation
+    var style = document.createElement('style');
+    style.textContent = '@keyframes devtool-voice-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }';
+    document.head.appendChild(style);
+
+    // Microphone icon
+    var icon = document.createElement('span');
+    icon.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24"><path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z" fill="#e53935"/></svg>';
+    indicator.appendChild(icon);
+
+    var label = document.createElement('span');
+    label.textContent = text || 'Listening...';
+    indicator.appendChild(label);
+
+    sketchState.container.appendChild(indicator);
+  }
+
+  function updateVoiceIndicator(text) {
+    var indicator = document.getElementById('__devtool-voice-indicator');
+    if (indicator) {
+      var label = indicator.querySelector('span:last-child');
+      if (label) label.textContent = text || 'Listening...';
+    }
+  }
+
+  function hideVoiceIndicator() {
+    var indicator = document.getElementById('__devtool-voice-indicator');
+    if (indicator && indicator.parentNode) {
+      indicator.parentNode.removeChild(indicator);
+    }
+  }
+
+  // Listen for voice commands from voice module
+  document.addEventListener('devtool-voice-command', function(e) {
+    if (!sketchState.isActive) return;
+
+    var cmd = e.detail;
+    if (cmd.tool) {
+      setTool(cmd.tool);
+    } else if (cmd.action) {
+      switch (cmd.action) {
+        case 'undo': undo(); break;
+        case 'redo': redo(); break;
+        case 'save': saveAndSend(); break;
+        case 'clear': clearAll(); break;
+        case 'close': close(); break;
+        case 'selectAll': selectAll(); break;
+        case 'delete': deleteSelected(); break;
+      }
+    } else if (cmd.color) {
+      sketchState.strokeColor = cmd.color;
+      updateSelectedElements({ strokeColor: cmd.color });
+    } else if (cmd.strokeWidth) {
+      sketchState.strokeWidth = cmd.strokeWidth;
+      updateSelectedElements({ strokeWidth: cmd.strokeWidth });
+    }
+    render();
+  });
+
+  function selectAll() {
+    sketchState.selectedElements = sketchState.elements.slice();
+    render();
+  }
+
+  function deleteSelected() {
+    sketchState.selectedElements.forEach(function(el) {
+      deleteElement(el.id);
+    });
+    sketchState.selectedElements = [];
+    render();
+  }
+
   // History management
   function saveHistory() {
     // Remove future history if we're not at the end
@@ -1219,12 +1494,37 @@
 
       case 'freedraw':
         if (el.points.length < 2) break;
-        ctx.beginPath();
-        ctx.moveTo(el.x + el.points[0].x, el.y + el.points[0].y);
-        for (var i = 1; i < el.points.length; i++) {
-          ctx.lineTo(el.x + el.points[i].x, el.y + el.points[i].y);
+        // Check if this stroke has pressure data (stylus input)
+        var hasPressure = el.points[0].pressure !== undefined && el.points[0].pressure !== 0.5;
+
+        if (hasPressure) {
+          // Pressure-sensitive rendering: draw segment by segment with varying width
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+
+          for (var i = 1; i < el.points.length; i++) {
+            var p0 = el.points[i - 1];
+            var p1 = el.points[i];
+
+            // Pressure affects stroke width: 0.3x to 2x base width
+            // pressure=0 -> 0.3x, pressure=0.5 -> 1x, pressure=1 -> 2x
+            var pressureFactor = 0.3 + (p1.pressure || 0.5) * 1.7;
+            ctx.lineWidth = el.strokeWidth * pressureFactor;
+
+            ctx.beginPath();
+            ctx.moveTo(el.x + p0.x, el.y + p0.y);
+            ctx.lineTo(el.x + p1.x, el.y + p1.y);
+            ctx.stroke();
+          }
+        } else {
+          // Standard rendering for mouse input (uniform width)
+          ctx.beginPath();
+          ctx.moveTo(el.x + el.points[0].x, el.y + el.points[0].y);
+          for (var i = 1; i < el.points.length; i++) {
+            ctx.lineTo(el.x + el.points[i].x, el.y + el.points[i].y);
+          }
+          ctx.stroke();
         }
-        ctx.stroke();
         break;
 
       case 'text':

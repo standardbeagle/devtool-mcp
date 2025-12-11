@@ -17,6 +17,7 @@
   var audit = window.__devtool_audit;
   var interactions = window.__devtool_interactions;
   var mutations = window.__devtool_mutations;
+  var voice = window.__devtool_voice;
   var indicator = window.__devtool_indicator;
   var sketch = window.__devtool_sketch;
 
@@ -175,6 +176,21 @@
       undo: sketch.undo,
       redo: sketch.redo,
       clear: sketch.clearAll
+    },
+
+    // ========================================================================
+    // VOICE TRANSCRIPTION
+    // ========================================================================
+
+    voice: {
+      init: voice.init,
+      start: voice.start,
+      stop: voice.stop,
+      toggle: voice.toggle,
+      setMode: voice.setMode,
+      getStatus: voice.getStatus,
+      configure: voice.configure,
+      isSupported: voice.isSupported
     },
 
     // ========================================================================

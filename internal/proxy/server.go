@@ -61,6 +61,9 @@ type ProxyServer struct {
 
 	// Overlay notifier for sending events to agent overlay
 	overlayNotifier *OverlayNotifier
+
+	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
+	voiceSessions sync.Map
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -751,8 +754,29 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ps.wsConns.Store(connID, conn)
 	defer ps.wsConns.Delete(connID)
 
+	// Cleanup voice session on disconnect
+	defer func() {
+		if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
+			session.(*VoiceSession).Close()
+		}
+	}()
+
 	// Read messages from frontend
 	for {
+		messageType, rawMessage, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		// Handle binary audio data for voice sessions
+		if messageType == websocket.BinaryMessage {
+			if session, ok := ps.voiceSessions.Load(connID); ok {
+				session.(*VoiceSession).SendAudio(rawMessage)
+			}
+			continue
+		}
+
+		// Parse JSON message
 		var msg struct {
 			Type      string                 `json:"type"`
 			Data      map[string]interface{} `json:"data"`
@@ -760,9 +784,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			SessionID string                 `json:"session_id"`
 		}
 
-		err := conn.ReadJSON(&msg)
-		if err != nil {
-			break
+		if err := json.Unmarshal(rawMessage, &msg); err != nil {
+			continue
 		}
 
 		seq := ps.requestSeq.Add(1)
@@ -933,6 +956,59 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
 				_ = ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry)
+			}
+
+		case "voice_start":
+			// Start voice transcription session
+			config := DefaultDeepgramConfig()
+
+			// Apply any config from message
+			if lang := getStringField(msg.Data, "language"); lang != "" {
+				config.Language = lang
+			}
+			if model := getStringField(msg.Data, "model"); model != "" {
+				config.Model = model
+			}
+
+			session, err := NewVoiceSession(connID, conn, config)
+			if err != nil {
+				conn.WriteJSON(map[string]interface{}{
+					"type":  "voice_error",
+					"error": err.Error(),
+				})
+				continue
+			}
+
+			ps.voiceSessions.Store(connID, session)
+
+			// Log voice start
+			ps.logger.LogCustom(CustomLog{
+				ID:        id,
+				Timestamp: timestamp,
+				Level:     "info",
+				Message:   "[Voice] Transcription session started",
+				Data:      map[string]interface{}{"model": config.Model, "language": config.Language},
+				URL:       msg.URL,
+			})
+
+		case "voice_stop":
+			// Stop voice transcription session
+			if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
+				session.(*VoiceSession).Close()
+
+				conn.WriteJSON(map[string]interface{}{
+					"type":    "voice_stopped",
+					"message": "Transcription session ended",
+				})
+
+				// Log voice stop
+				ps.logger.LogCustom(CustomLog{
+					ID:        id,
+					Timestamp: timestamp,
+					Level:     "info",
+					Message:   "[Voice] Transcription session stopped",
+					URL:       msg.URL,
+				})
 			}
 		}
 	}
