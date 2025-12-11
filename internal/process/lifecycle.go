@@ -247,10 +247,10 @@ type StartOrReuseResult struct {
 
 // portConflictPatterns matches common EADDRINUSE error patterns
 var portConflictPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`EADDRINUSE.*:(\d+)`),                                         // Node.js style
-	regexp.MustCompile(`listen tcp[^\d]*:(\d+).*address already in use`),             // Go style
-	regexp.MustCompile(`[Aa]ddress already in use.*[':]+(\d+)`),                      // Python/generic with port after
-	regexp.MustCompile(`[Aa]ddress already in use[^\d]*(\d+)`),                       // Generic with port number
+	regexp.MustCompile(`EADDRINUSE.*:(\d+)`),                             // Node.js style
+	regexp.MustCompile(`listen tcp[^\d]*:(\d+).*address already in use`), // Go style
+	regexp.MustCompile(`[Aa]ddress already in use.*[':]+(\d+)`),          // Python/generic with port after
+	regexp.MustCompile(`[Aa]ddress already in use[^\d]*(\d+)`),           // Generic with port number
 }
 
 // detectPortConflict checks process output for port conflict errors and returns the port.
